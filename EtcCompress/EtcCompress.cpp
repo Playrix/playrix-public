@@ -2200,8 +2200,8 @@ struct GuessStateColor
 
 	__forceinline void Sort(int water)
 	{
-		SortNodes10(node0, water);
-		SortNodes10(node1, water - node0[0x10].Error);
+		SortNodes10(node0, water - node1[0x10].Error - node2[0x10].Error);
+		SortNodes10(node1, water - node0[0x10].Error - node2[0x10].Error);
 		SortNodes10(node2, water - node0[0x10].Error - node1[0x10].Error);
 	}
 };
@@ -2261,8 +2261,8 @@ struct AdjustStateColor
 			return;
 		flag_sort = true;
 
-		SortNodes20(node0, water);
-		SortNodes20(node1, water - node0[0x20].Error);
+		SortNodes20(node0, water - node1[0x20].Error - node2[0x20].Error);
+		SortNodes20(node1, water - node0[0x20].Error - node2[0x20].Error);
 		SortNodes20(node2, water - node0[0x20].Error - node1[0x20].Error);
 	}
 
@@ -2276,7 +2276,7 @@ struct AdjustStateColor
 		{
 			int e0 = node0[c0].Error;
 			if (e0 + node1[0x20].Error + node2[0x20].Error >= water)
-				continue;
+				break;
 
 			c[0] = (BYTE)node0[c0].Color;
 
@@ -2286,7 +2286,7 @@ struct AdjustStateColor
 			{
 				int e1 = node1[c1].Error + e0;
 				if (e1 + node2[0x20].Error >= water)
-					continue;
+					break;
 
 				c[1] = (BYTE)node1[c1].Color;
 
@@ -2329,7 +2329,7 @@ struct AdjustStateColor
 		{
 			int e0 = node0[c0].Error;
 			if (e0 + node1[0x20].Error + node2[0x20].Error >= minimum)
-				continue;
+				break;
 
 			if (ErrorsG[c0] + node2[0x20].Error >= minimum)
 				continue;
@@ -2340,7 +2340,7 @@ struct AdjustStateColor
 			{
 				int e1 = node1[c1].Error + e0;
 				if (e1 + node2[0x20].Error >= minimum)
-					continue;
+					break;
 
 				int originGR = (c0 << 5) + c1;
 				e1 = ErrorsGR[originGR];
@@ -2618,7 +2618,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 		{
 			int e0 = S.node0[c0].Error;
 			if (e0 + S.node1[0x10].Error + S.node2[0x10].Error >= water)
-				continue;
+				break;
 
 			c[0] = (BYTE)S.node0[c0].Color;
 
@@ -2626,7 +2626,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 			{
 				int e1 = S.node1[c1].Error + e0;
 				if (e1 + S.node2[0x10].Error >= water)
-					continue;
+					break;
 
 				c[1] = (BYTE)S.node1[c1].Color;
 
@@ -2638,7 +2638,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 				{
 					int e2 = S.node2[c2].Error + e1;
 					if (e2 >= water)
-						continue;
+						break;
 
 					c[2] = (BYTE)S.node2[c2].Color;
 
@@ -2718,7 +2718,7 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 	{
 		int e0 = SA.node0[a0].Error;
 		if (e0 + SA.node1[0x20].Error + SA.node2[0x20].Error >= most)
-			continue;
+			break;
 
 		if (SA.ErrorsG[a0] + SA.node2[0x20].Error >= most)
 			continue;
@@ -2753,7 +2753,7 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 		{
 			int e1 = SA.node1[a1].Error + e0;
 			if (e1 + SA.node2[0x20].Error >= most)
-				continue;
+				break;
 
 			int a_originGR = (a0 << 5) + a1;
 			e1 = SA.ErrorsGR[a_originGR];
@@ -2802,7 +2802,7 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 			{
 				int e2 = SA.node2[a2].Error + e1;
 				if (e2 >= most)
-					continue;
+					break;
 
 				a[2] = (BYTE)SA.node2[a2].Color;
 
