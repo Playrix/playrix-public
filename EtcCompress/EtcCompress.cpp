@@ -2225,7 +2225,8 @@ struct AdjustStateColor
 	int ErrorsGRB[0x20 * 0x20 * 0x20];
 
 	int swap0[0x20], swap1[0x20], swap2[0x20];
-	int part0[0x20], part1[0x20], part2[0x20];
+
+	__declspec(align(16)) Node diff0[0x20][10], diff1[0x20][10], diff2[0x20][10];
 
 	__forceinline AdjustStateColor()
 	{
@@ -2651,14 +2652,8 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 						memcpy(color, c, 4);
 
 						table = q;
-
-						if (water <= e1 + S.node2[0x10].Error)
-							break;
 					}
 				}
-
-				if (water <= e0 + S.node1[0x10].Error + S.node2[0x10].Error)
-					break;
 			}
 		}
 	}
@@ -2686,6 +2681,75 @@ static int CompressBlockColor44(BlockStateColor &s, const Elem& elem, int water,
 	s.mode = mode;
 
 	return err;
+}
+
+static __forceinline int DifferentialColors3(int Id, uint32_t& flag, const Node node[0x20], const int swap[0x20], Node diff[8 + 1], int water)
+{
+	if ((flag & (1u << Id)) == 0)
+	{
+		flag |= (1u << Id);
+
+		int Ld = Max(Id - 4, 0);
+		int Hd = Min(Id + 3, 31);
+
+		int w = 0;
+
+		for (int d = Ld; d <= Hd; d++)
+		{
+			int b = swap[d];
+			if (b < 0)
+				continue;
+
+			int error = node[b].Error;
+			if (error < water)
+			{
+				diff[w].Error = error;
+				diff[w].Color = b;
+				w++;
+			}
+		}
+
+		diff[8].Color = w;
+
+		if (w <= 2)
+		{
+			for (int i = w; i < 2; i++)
+			{
+				diff[i].Error = water;
+			}
+
+			SortNodes2Shifted(&diff[1]);
+		}
+		else if (w <= 4)
+		{
+			for (int i = w; i < 4; i++)
+			{
+				diff[i].Error = water;
+			}
+
+			SortNodes4Shifted(&diff[2]);
+		}
+		else if (w <= 6)
+		{
+			for (int i = w; i < 6; i++)
+			{
+				diff[i].Error = water;
+			}
+
+			SortNodes6Shifted(&diff[3]);
+		}
+		else
+		{
+			for (int i = w; i < 8; i++)
+			{
+				diff[i].Error = water;
+			}
+
+			SortNodes8Shifted(&diff[4]);
+		}
+	}
+
+	return diff[0].Error;
 }
 
 static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE other[4], int water, int qa, int qb, AdjustStateColor& SA, AdjustStateColor& SB, int bestA, int bestB)
@@ -2726,25 +2790,8 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 		a[0] = (BYTE)SA.node0[a0].Color;
 
 		int Id0 = a[0] >> 3;
-		int Ld0 = Max(Id0 - 4, 0);
-		int Hd0 = Min(Id0 + 3, 31);
-
-		if ((SB.flag0 & (1u << Id0)) == 0)
-		{
-			SB.flag0 |= (1u << Id0);
-
-			int min0 = kUnknownError;
-			for (int d0 = Ld0; d0 <= Hd0; d0++)
-			{
-				int b0 = SB.swap0[d0];
-				if (b0 < 0)
-					continue;
-
-				min0 = Min(min0, SB.node0[b0].Error);
-			}
-			SB.part0[Id0] = min0;
-		}
-		int min0 = SB.part0[Id0];
+		Node* diff0 = SB.diff0[Id0];
+		int min0 = DifferentialColors3(Id0, SB.flag0, SB.node0, SB.swap0, diff0, water - bestA);
 
 		if (SA.ErrorsG[a0] + SA.node2[0x20].Error + min0 + SB.node1[0x20].Error + SB.node2[0x20].Error >= water)
 			continue;
@@ -2765,25 +2812,8 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 			a[1] = (BYTE)SA.node1[a1].Color;
 
 			int Id1 = a[1] >> 3;
-			int Ld1 = Max(Id1 - 4, 0);
-			int Hd1 = Min(Id1 + 3, 31);
-
-			if ((SB.flag1 & (1u << Id1)) == 0)
-			{
-				SB.flag1 |= (1u << Id1);
-
-				int min1 = kUnknownError;
-				for (int d1 = Ld1; d1 <= Hd1; d1++)
-				{
-					int b1 = SB.swap1[d1];
-					if (b1 < 0)
-						continue;
-
-					min1 = Min(min1, SB.node1[b1].Error);
-				}
-				SB.part1[Id1] = min1;
-			}
-			int min1 = SB.part1[Id1];
+			Node* diff1 = SB.diff1[Id1];
+			int min1 = DifferentialColors3(Id1, SB.flag1, SB.node1, SB.swap1, diff1, water - bestA);
 
 			if (e1 + SA.node2[0x20].Error + min0 + min1 + SB.node2[0x20].Error >= water)
 				continue;
@@ -2818,52 +2848,29 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 					continue;
 
 				int Id2 = a[2] >> 3;
-				int Ld2 = Max(Id2 - 4, 0);
-				int Hd2 = Min(Id2 + 3, 31);
-
-				if ((SB.flag2 & (1u << Id2)) == 0)
-				{
-					SB.flag2 |= (1u << Id2);
-
-					int min2 = kUnknownError;
-					for (int d2 = Ld2; d2 <= Hd2; d2++)
-					{
-						int b2 = SB.swap2[d2];
-						if (b2 < 0)
-							continue;
-
-						min2 = Min(min2, SB.node2[b2].Error);
-					}
-					SB.part2[Id2] = min2;
-				}
-				int min2 = SB.part2[Id2];
+				Node* diff2 = SB.diff2[Id2];
+				int min2 = DifferentialColors3(Id2, SB.flag2, SB.node2, SB.swap2, diff2, water - bestA);
 
 				if (e2 + min0 + min1 + min2 >= water)
 					continue;
 
-				for (int d0 = Ld0; d0 <= Hd0; d0++)
+				for (int d0 = 0; d0 < diff0[8].Color; d0++)
 				{
-					int b0 = SB.swap0[d0];
-					if (b0 < 0)
-						continue;
-
-					int e3 = SB.node0[b0].Error + e2;
+					int e3 = diff0[d0].Error + e2;
 					if (e3 + min1 + min2 >= water)
-						continue;
+						break;
 
+					int b0 = diff0[d0].Color;
 					if (e2 + SB.ErrorsG[b0] + min2 >= water)
 						continue;
 
-					for (int d1 = Ld1; d1 <= Hd1; d1++)
+					for (int d1 = 0; d1 < diff1[8].Color; d1++)
 					{
-						int b1 = SB.swap1[d1];
-						if (b1 < 0)
-							continue;
-
-						int e4 = SB.node1[b1].Error + e3;
+						int e4 = diff1[d1].Error + e3;
 						if (e4 + min2 >= water)
-							continue;
+							break;
 
+						int b1 = diff1[d1].Color;
 						int b_originGR = (b0 << 5) + b1;
 						e4 = SB.ErrorsGR[b_originGR] + e2;
 						if (e4 + min2 >= water)
@@ -2881,16 +2888,13 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 							}
 						}
 
-						for (int d2 = Ld2; d2 <= Hd2; d2++)
+						for (int d2 = 0; d2 < diff2[8].Color; d2++)
 						{
-							int b2 = SB.swap2[d2];
-							if (b2 < 0)
-								continue;
-
-							int e5 = SB.node2[b2].Error + e4;
+							int e5 = diff2[d2].Error + e4;
 							if (e5 >= water)
-								continue;
+								break;
 
+							int b2 = diff2[d2].Color;
 							int eb = SB.ErrorsGRB[b2 + b_origin];
 							if (eb < 0)
 							{
@@ -2914,26 +2918,11 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 								other[0] = (BYTE)SB.node0[b0].Color;
 								other[1] = (BYTE)SB.node1[b1].Color;
 								other[2] = (BYTE)SB.node2[b2].Color;
-
-								if (water <= e4 + min2)
-									break;
 							}
 						}
-
-						if (water <= e2 + SB.ErrorsG[b0] + min2)
-							break;
 					}
-
-					if (water <= e2 + min0 + min1 + min2)
-						break;
 				}
-
-				if (most <= e1 + SA.node2[0x20].Error)
-					break;
 			}
-
-			if (most <= SA.ErrorsG[a0] + SA.node2[0x20].Error)
-				break;
 		}
 	}
 
