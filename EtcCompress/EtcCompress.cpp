@@ -59,8 +59,8 @@ static const __declspec(align(16)) int g_colors5[0x20] =
 	0xE7, 0xEF, 0xF7, 0xFF
 };
 
-static __m128i g_errors4[8][0x10 >> 2][0x100];
-static __m128i g_errors5[8][0x20 >> 2][0x100];
+static __m128i g_errors4[8][0x100][0x10 >> 2];
+static __m128i g_errors5[8][0x100][0x20 >> 2];
 
 static const double g_ssim_nk1L = (0.01 * 255 * 8) * (0.01 * 255 * 8);
 static const double g_ssim_nk2L = (0.03 * 255 * 8) * (0.03 * 255 * 8);
@@ -126,7 +126,7 @@ static void InitLevelErrors()
 			{
 				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
 
-				M128I_I32(g_errors4[q][i >> 2][x], i & 3) = v * v;
+				((int*)&g_errors4[q][x][0])[i] = v * v;
 			}
 		}
 
@@ -143,133 +143,198 @@ static void InitLevelErrors()
 			{
 				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
 
-				M128I_I32(g_errors5[q][i >> 2][x], i & 3) = v * v;
+				((int*)&g_errors5[q][x][0])[i] = v * v;
 			}
 		}
 	}
 }
 
-static __forceinline __m128i ComputeLevel(const Half& half, int offset, const __m128i errors[0x100])
+static __forceinline void GuessLevels(const Half& half, int offset, Node nodes[0x10 + 1], int weight, int water, int q)
 {
-	__m128i sum = _mm_setzero_si128();
+#define PROCESS_PIXEL(index) \
+	{ \
+		const __m128i* p = errors[half.Data[j + index]]; \
+		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
+		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
+		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
+		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+	} \
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[index * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
+	__m128i sum0 = _mm_setzero_si128();
+	__m128i sum1 = _mm_setzero_si128();
+	__m128i sum2 = _mm_setzero_si128();
+	__m128i sum3 = _mm_setzero_si128();
+
+	auto errors = g_errors4[q];
 
 	int k = half.Count, j = offset;
 	if (k & 8)
 	{
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 0]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 4]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 8]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 12]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 16]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 20]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 24]]));
-		sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 28]]));
+		PROCESS_PIXEL(0);
+		PROCESS_PIXEL(4);
+		PROCESS_PIXEL(8);
+		PROCESS_PIXEL(12);
+		PROCESS_PIXEL(16);
+		PROCESS_PIXEL(20);
+		PROCESS_PIXEL(24);
+		PROCESS_PIXEL(28);
 	}
 	else
 	{
 		if (k & 4)
 		{
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 0]]));
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 4]]));
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 8]]));
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 12]]));
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
 
 			j += 16;
 		}
 
 		if (k & 2)
 		{
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 0]]));
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 4]]));
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
 
 			j += 8;
 		}
 
 		if (k & 1)
 		{
-			sum = _mm_add_epi32(sum, _mm_load_si128(&errors[half.Data[j + 0]]));
+			PROCESS_PIXEL(0);
 		}
 	}
 
-	return sum;
+	int top = (water + weight - 1) / weight;
+	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
+	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
+	__m128i level = _mm_mullo_epi32(mtop, mweight);
+
+	int w = 0;
+
+	STORE_QUAD(0);
+	STORE_QUAD(1);
+	STORE_QUAD(2);
+	STORE_QUAD(3);
+
+	nodes[0x10].Error = _mm_cvtsi128_si32(HorizontalMinimum4(level));
+	nodes[0x10].Color = w;
+
+#undef PROCESS_PIXEL
+#undef STORE_QUAD
 }
 
 static __forceinline void AdjustLevels(const Half& half, int offset, Node nodes[0x20 + 1], int weight, int water, int q)
 {
+#define PROCESS_PIXEL(index) \
+	{ \
+		const __m128i* p = errors[half.Data[j + index]]; \
+		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
+		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
+		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
+		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+		sum4 = _mm_add_epi32(sum4, _mm_load_si128(p + 4)); \
+		sum5 = _mm_add_epi32(sum5, _mm_load_si128(p + 5)); \
+		sum6 = _mm_add_epi32(sum6, _mm_load_si128(p + 6)); \
+		sum7 = _mm_add_epi32(sum7, _mm_load_si128(p + 7)); \
+	} \
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[index * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
+	__m128i sum0 = _mm_setzero_si128();
+	__m128i sum1 = _mm_setzero_si128();
+	__m128i sum2 = _mm_setzero_si128();
+	__m128i sum3 = _mm_setzero_si128();
+	__m128i sum4 = _mm_setzero_si128();
+	__m128i sum5 = _mm_setzero_si128();
+	__m128i sum6 = _mm_setzero_si128();
+	__m128i sum7 = _mm_setzero_si128();
+
+	auto errors = g_errors5[q];
+
+	int k = half.Count, j = offset;
+	if (k & 8)
+	{
+		PROCESS_PIXEL(0);
+		PROCESS_PIXEL(4);
+		PROCESS_PIXEL(8);
+		PROCESS_PIXEL(12);
+		PROCESS_PIXEL(16);
+		PROCESS_PIXEL(20);
+		PROCESS_PIXEL(24);
+		PROCESS_PIXEL(28);
+	}
+	else
+	{
+		if (k & 4)
+		{
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
+
+			j += 16;
+		}
+
+		if (k & 2)
+		{
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+
+			j += 8;
+		}
+
+		if (k & 1)
+		{
+			PROCESS_PIXEL(0);
+		}
+	}
+
 	int top = (water + weight - 1) / weight;
-
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
-
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
-
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
 
 	int w = 0;
 
-	for (int c = 0; c < 0x20; c += 4)
-	{
-		__m128i sum = ComputeLevel(half, offset, g_errors5[q][c >> 2]);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum)) != 0)
-		{
-			sum = _mm_mullo_epi32(_mm_min_epi32(sum, mtop), mweight);
+	STORE_QUAD(0);
+	STORE_QUAD(1);
+	STORE_QUAD(2);
+	STORE_QUAD(3);
+	STORE_QUAD(4);
+	STORE_QUAD(5);
+	STORE_QUAD(6);
+	STORE_QUAD(7);
 
-			__m128i mc = _mm_load_si128((__m128i*)&g_colors5[c]);
-
-			__m128i me1 = HorizontalMinimum4(sum);
-
-			__m128i mL = _mm_unpacklo_epi32(sum, mc);
-			__m128i mH = _mm_unpackhi_epi32(sum, mc);
-
-			_mm_store_si128((__m128i*)&nodes[w + 0], mL);
-			_mm_store_si128((__m128i*)&nodes[w + 2], mH);
-
-			level = _mm_min_epi32(level, me1);
-
-			w += 4;
-		}
-	}
-
-	nodes[0x20].Error = _mm_cvtsi128_si32(level);
+	nodes[0x20].Error = _mm_cvtsi128_si32(HorizontalMinimum4(level));
 	nodes[0x20].Color = w;
-}
 
-static __forceinline void GuessLevels(const Half& half, int offset, Node nodes[0x10 + 1], int weight, int water, int q)
-{
-	int top = (water + weight - 1) / weight;
-
-	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
-
-	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
-
-	__m128i level = _mm_mullo_epi32(mtop, mweight);
-
-	int w = 0;
-
-	for (int c = 0; c < 0x10; c += 4)
-	{
-		__m128i sum = ComputeLevel(half, offset, g_errors4[q][c >> 2]);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum)) != 0)
-		{
-			sum = _mm_mullo_epi32(_mm_min_epi32(sum, mtop), mweight);
-
-			__m128i mc = _mm_load_si128((__m128i*)&g_colors4[c]);
-
-			__m128i me1 = HorizontalMinimum4(sum);
-
-			__m128i mL = _mm_unpacklo_epi32(sum, mc);
-			__m128i mH = _mm_unpackhi_epi32(sum, mc);
-
-			_mm_store_si128((__m128i*)&nodes[w + 0], mL);
-			_mm_store_si128((__m128i*)&nodes[w + 2], mH);
-
-			level = _mm_min_epi32(level, me1);
-
-			w += 4;
-		}
-	}
-
-	nodes[0x10].Error = _mm_cvtsi128_si32(level);
-	nodes[0x10].Color = w;
+#undef PROCESS_PIXEL
+#undef STORE_QUAD
 }
 
 
