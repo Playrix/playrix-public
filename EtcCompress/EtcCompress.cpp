@@ -149,11 +149,11 @@ static void InitLevelErrors()
 	}
 }
 
-static __forceinline void GuessLevels(const Half& half, int offset, Node nodes[0x10 + 1], int weight, int water, int q)
+static __forceinline void GuessLevels(const Half& half, size_t offset, Node nodes[0x10 + 1], int weight, int water, int q)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[half.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + index]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -180,7 +180,7 @@ static __forceinline void GuessLevels(const Half& half, int offset, Node nodes[0
 
 	auto errors = g_errors4[q];
 
-	int k = half.Count, j = offset;
+	int k = half.Count; size_t j = offset;
 	if (k & 8)
 	{
 		PROCESS_PIXEL(0);
@@ -223,7 +223,7 @@ static __forceinline void GuessLevels(const Half& half, int offset, Node nodes[0
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
 
-	int w = 0;
+	size_t w = 0;
 
 	STORE_QUAD(0);
 	STORE_QUAD(1);
@@ -231,17 +231,17 @@ static __forceinline void GuessLevels(const Half& half, int offset, Node nodes[0
 	STORE_QUAD(3);
 
 	nodes[0x10].Error = _mm_cvtsi128_si32(HorizontalMinimum4(level));
-	nodes[0x10].Color = w;
+	nodes[0x10].Color = (int)w;
 
 #undef PROCESS_PIXEL
 #undef STORE_QUAD
 }
 
-static __forceinline void AdjustLevels(const Half& half, int offset, Node nodes[0x20 + 1], int weight, int water, int q)
+static __forceinline void AdjustLevels(const Half& half, size_t offset, Node nodes[0x20 + 1], int weight, int water, int q)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[half.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + index]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -276,7 +276,7 @@ static __forceinline void AdjustLevels(const Half& half, int offset, Node nodes[
 
 	auto errors = g_errors5[q];
 
-	int k = half.Count, j = offset;
+	int k = half.Count; size_t j = offset;
 	if (k & 8)
 	{
 		PROCESS_PIXEL(0);
@@ -319,7 +319,7 @@ static __forceinline void AdjustLevels(const Half& half, int offset, Node nodes[
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
 
-	int w = 0;
+	size_t w = 0;
 
 	STORE_QUAD(0);
 	STORE_QUAD(1);
@@ -331,7 +331,7 @@ static __forceinline void AdjustLevels(const Half& half, int offset, Node nodes[
 	STORE_QUAD(7);
 
 	nodes[0x20].Error = _mm_cvtsi128_si32(HorizontalMinimum4(level));
-	nodes[0x20].Color = w;
+	nodes[0x20].Color = (int)w;
 
 #undef PROCESS_PIXEL
 #undef STORE_QUAD
@@ -629,7 +629,7 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 
 	__m128i mc = mt3210;
 
-	for (int i = 0; i < 8; i++)
+	for (size_t i = 0; i < 8; i++)
 	{
 		__m128i mb = _mm_shuffle_epi32(_mm_cvtsi32_si128(half.Data[i << 2]), 0);
 
@@ -644,7 +644,7 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 
 	int loops[8];
 
-	for (int i = 0; i < 8; i++)
+	for (size_t i = 0; i < 8; i++)
 	{
 		int k = 0;
 		while ((ways[i] & (1 << k)) == 0) k++;
@@ -658,9 +658,9 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 	{
 		SSIM_INIT();
 
-		for (int i = 0; i < 8; i++)
+		for (size_t i = 0; i < 8; i++)
 		{
-			__m128i mt = _mm_cvtsi32_si128(M128I_I32(mt3210, loops[i]));
+			__m128i mt = _mm_cvtsi32_si128(M128I_I32(mt3210, (size_t)(uint32_t)loops[i]));
 
 			__m128i mb = _mm_cvtsi32_si128(half.Data[i << 2]);
 
@@ -678,7 +678,7 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 			best = ssim;
 
 			uint32_t v = 0;
-			for (int j = 0; j < 8; j++)
+			for (size_t j = 0; j < 8; j++)
 			{
 				v |= ((uint32_t)loops[j]) << (j + j);
 			}
@@ -688,7 +688,7 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 				break;
 		}
 
-		int i = 0;
+		size_t i = 0;
 		for (;; )
 		{
 			int k = loops[i];
@@ -2516,8 +2516,8 @@ struct AdjustStateColorGroup
 
 static __forceinline double ComputeTableColor(const Half& half, const BYTE color[4], int q, uint32_t& index)
 {
-	int halfSize = half.Count;
-	if (halfSize <= 0)
+	size_t halfSize = (size_t)(uint32_t)half.Count;
+	if (halfSize == 0)
 		return 1.0;
 
 	__m128i mc = load_color_GRB(color);
@@ -2540,7 +2540,7 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 
 	int ways[8];
 
-	for (int k = 0, i = 0; k < halfSize; k++, i += 4)
+	for (size_t k = 0, i = 0; k < halfSize; k++, i += 4)
 	{
 		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
 
@@ -2576,7 +2576,7 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 
 	int loops[8];
 
-	for (int i = 0; i < halfSize; i++)
+	for (size_t i = 0; i < halfSize; i++)
 	{
 		int k = 0;
 		while ((ways[i] & (1 << k)) == 0) k++;
@@ -2590,9 +2590,9 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 	{
 		SSIM_INIT();
 
-		for (int i = 0; i < halfSize; i++)
+		for (size_t i = 0; i < halfSize; i++)
 		{
-			__m128i mt = _mm_load_si128(&vals[loops[i]]);
+			__m128i mt = _mm_load_si128(&vals[(size_t)(uint32_t)loops[i]]);
 
 			__m128i mb = _mm_load_si128((const __m128i*)&half.Data[i << 2]);
 
@@ -2615,7 +2615,7 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 			best = ssim;
 
 			uint32_t v = 0;
-			for (int j = 0; j < halfSize; j++)
+			for (size_t j = 0; j < halfSize; j++)
 			{
 				v |= ((uint32_t)loops[j]) << (j + j);
 			}
@@ -2625,7 +2625,7 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 				break;
 		}
 
-		int i = 0;
+		size_t i = 0;
 		for (;; )
 		{
 			int k = loops[i];
@@ -2651,7 +2651,7 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 			break;
 	}
 
-	for (int i = halfSize, j = 0; --i >= 0; j++)
+	for (size_t j = 0; j < halfSize; j++)
 	{
 		int shift = half.Shift[j];
 
@@ -3137,9 +3137,9 @@ static __forceinline int MeasureHalfColor(const int pL[4 * 4], const int pH[4 * 
 
 static __forceinline void FilterPixelsColor(Half& half, uint32_t order)
 {
-	int w = 0;
+	size_t w = 0;
 
-	for (int i = 0; i < 8 * 4; i += 4)
+	for (size_t i = 0; i < 8 * 4; i += 4)
 	{
 		__m128i m = _mm_load_si128((const __m128i*)&half.Data[i]);
 
@@ -3154,7 +3154,7 @@ static __forceinline void FilterPixelsColor(Half& half, uint32_t order)
 		w += (a != 0) ? 1 : 0;
 	}
 
-	half.Count = w;
+	half.Count = (int)w;
 }
 
 static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
