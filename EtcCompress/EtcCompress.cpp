@@ -3157,6 +3157,43 @@ static __forceinline void FilterPixelsColor(Half& half, uint32_t order)
 	half.Count = (int)w;
 }
 
+static double EstimateChromaDispersion(const Half& half)
+{
+	static const double g_r_nn[7] =
+	{
+		kRed / (2.0 * 2.0), kRed / (3.0 * 3.0), kRed / (4.0 * 4.0), kRed / (5.0 * 5.0), kRed / (6.0 * 6.0), kRed / (7.0 * 7.0), kRed / (8.0 * 8.0)
+	};
+
+	static const double g_b_nn[7] =
+	{
+		kBlue / (2.0 * 2.0), kBlue / (3.0 * 3.0), kBlue / (4.0 * 4.0), kBlue / (5.0 * 5.0), kBlue / (6.0 * 6.0), kBlue / (7.0 * 7.0), kBlue / (8.0 * 8.0)
+	};
+
+	int n = half.Count;
+	if (n < 2)
+		return 0;
+
+	int sr = 0, sb = 0, srr = 0, sbb = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		int g = half.Data[i * 4 + 0];
+		int r = half.Data[i * 4 + 1];
+		int b = half.Data[i * 4 + 2];
+
+		r -= g;
+		b -= g;
+
+		sr += r;
+		sb += b;
+
+		srr += r * r;
+		sbb += b * b;
+	}
+
+	return (srr * n - sr * sr) * g_r_nn[n - 2] + (sbb * n - sb * sb) * g_b_nn[n - 2];
+}
+
 static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
 {
 	Elem norm, flip;
@@ -3249,11 +3286,37 @@ static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
 
 	if (err > 0)
 	{
-		int err_norm44 = CompressBlockColor44(s, norm, err, 0);
-		if (err > err_norm44)
-			err = err_norm44;
+		double Dnorm = EstimateChromaDispersion(norm.A) + EstimateChromaDispersion(norm.B);
+		double Dflip = EstimateChromaDispersion(flip.A) + EstimateChromaDispersion(flip.B);
 
-		if (err > 0)
+		if (Dnorm <= Dflip)
+		{
+			int err_norm44 = CompressBlockColor44(s, norm, err, 0);
+			if (err > err_norm44)
+				err = err_norm44;
+
+			if (err > 0)
+			{
+				int err_flip44 = CompressBlockColor44(s, flip, err, 1);
+				if (err > err_flip44)
+					err = err_flip44;
+
+				if (err > 0)
+				{
+					int err_norm53 = CompressBlockColor53(s, norm, err, 2);
+					if (err > err_norm53)
+						err = err_norm53;
+
+					if (err > 0)
+					{
+						int err_flip53 = CompressBlockColor53(s, flip, err, 3);
+						if (err > err_flip53)
+							err = err_flip53;
+					}
+				}
+			}
+		}
+		else
 		{
 			int err_flip44 = CompressBlockColor44(s, flip, err, 1);
 			if (err > err_flip44)
@@ -3261,15 +3324,22 @@ static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
 
 			if (err > 0)
 			{
-				int err_norm53 = CompressBlockColor53(s, norm, err, 2);
-				if (err > err_norm53)
-					err = err_norm53;
+				int err_norm44 = CompressBlockColor44(s, norm, err, 0);
+				if (err > err_norm44)
+					err = err_norm44;
 
 				if (err > 0)
 				{
 					int err_flip53 = CompressBlockColor53(s, flip, err, 3);
 					if (err > err_flip53)
 						err = err_flip53;
+
+					if (err > 0)
+					{
+						int err_norm53 = CompressBlockColor53(s, norm, err, 2);
+						if (err > err_norm53)
+							err = err_norm53;
+					}
 				}
 			}
 		}
