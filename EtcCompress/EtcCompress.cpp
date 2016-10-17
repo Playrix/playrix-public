@@ -24,22 +24,20 @@
 
 #define M128I_I32(mm, index) ((mm).m128i_i32[index])
 
-typedef unsigned char BYTE;
+typedef struct alignas(16) { int Data[8 * 4]; int Count, unused; uint8_t Shift[8]; } Half;
+typedef struct alignas(16) { Half A, B; } Elem;
 
-typedef __declspec(align(16)) struct { int Data[8 * 4]; int Count, unused; BYTE Shift[8]; } Half;
-typedef __declspec(align(16)) struct { Half A, B; } Elem;
-
-typedef __declspec(align(8)) struct { int Error, Color; } Node;
+typedef struct alignas(8) { int Error, Color; } Node;
 
 // http://www.brucelindbloom.com/index.html?WorkingSpaceInfo.html sRGB
 enum { kGreen = 715, kRed = 213, kBlue = 72, kUnknownError = (255 * 255) * 1000 * (4 * 4) + 1 };
 
-static const __declspec(align(16)) int g_table[8][2] = { { 2, 8 },{ 5, 17 },{ 9, 29 },{ 13, 42 },{ 18, 60 },{ 24, 80 },{ 33, 106 },{ 47, 183 } };
+static const int g_table[8][2] alignas(16) = { { 2, 8 },{ 5, 17 },{ 9, 29 },{ 13, 42 },{ 18, 60 },{ 24, 80 },{ 33, 106 },{ 47, 183 } };
 
-static const __declspec(align(16)) short g_GRB_I16[8] = { kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue, 0 };
-static const __declspec(align(16)) short g_GR_I16[8] = { kGreen, kRed, kGreen, kRed, kGreen, kRed, kGreen, kRed };
+static const short g_GRB_I16[8] alignas(16) = { kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue, 0 };
+static const short g_GR_I16[8] alignas(16) = { kGreen, kRed, kGreen, kRed, kGreen, kRed, kGreen, kRed };
 
-static const __declspec(align(16)) int g_colors4[0x10] =
+static const int g_colors4[0x10] alignas(16) =
 {
 	0x00, 0x11, 0x22, 0x33,
 	0x44, 0x55, 0x66, 0x77,
@@ -47,7 +45,7 @@ static const __declspec(align(16)) int g_colors4[0x10] =
 	0xCC, 0xDD, 0xEE, 0xFF
 };
 
-static const __declspec(align(16)) int g_colors5[0x20] =
+static const int g_colors5[0x20] alignas(16) =
 {
 	0x00, 0x08, 0x10, 0x18,
 	0x21, 0x29, 0x31, 0x39,
@@ -376,9 +374,9 @@ static __forceinline void AdjustLevels(const Half& half, size_t offset, Node nod
 	} \
 
 
-static __forceinline void DecompressHalfAlpha(BYTE pL[4 * 4 - 3], BYTE pH[4 * 4 - 3], int alpha, int q, uint32_t data, int shift)
+static __forceinline void DecompressHalfAlpha(uint8_t pL[4 * 4 - 3], uint8_t pH[4 * 4 - 3], int alpha, int q, uint32_t data, int shift)
 {
-	static const __declspec(align(16)) int g_delta[8][2] =
+	static const int g_delta[8][2] alignas(16) =
 	{
 		{ 2, (8 ^ 2) },
 		{ 5, (17 ^ 5) },
@@ -390,7 +388,7 @@ static __forceinline void DecompressHalfAlpha(BYTE pL[4 * 4 - 3], BYTE pH[4 * 4 
 		{ 47, (183 ^ 47) }
 	};
 
-	static const __declspec(align(16)) int g_mask[16][4] =
+	static const int g_mask[16][4] alignas(16) =
 	{
 		{ 0, 0, 0, 0 },{ -1, 0, 0, 0 },{ 0, -1, 0, 0 },{ -1, -1, 0, 0 },
 		{ 0, 0, -1, 0 },{ -1, 0, -1, 0 },{ 0, -1, -1, 0 },{ -1, -1, -1, 0 },
@@ -401,32 +399,32 @@ static __forceinline void DecompressHalfAlpha(BYTE pL[4 * 4 - 3], BYTE pH[4 * 4 
 	__m128i mt0 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_delta[q][0]), 0);
 	__m128i mt10 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_delta[q][1]), 0);
 
-	__m128i mMaskL = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(shift < 4 ? data << (4 - shift) : data >> (shift - 4)) & 0xF0]);
-	__m128i mMaskH = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(data >> (shift + 4 - 4)) & 0xF0]);
+	__m128i mMaskL = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(shift < 4 ? data << (4 - shift) : data >> (shift - 4)) & 0xF0]);
+	__m128i mMaskH = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(data >> (shift + 4 - 4)) & 0xF0]);
 
 	__m128i mtL = _mm_xor_si128(_mm_and_si128(mMaskL, mt10), mt0);
 	__m128i mtH = _mm_xor_si128(_mm_and_si128(mMaskH, mt10), mt0);
 
-	mMaskL = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(data >> (shift + 16 + 0 - 4)) & 0xF0]);
-	mMaskH = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(data >> (shift + 16 + 4 - 4)) & 0xF0]);
+	mMaskL = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(data >> (shift + 16 + 0 - 4)) & 0xF0]);
+	mMaskH = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(data >> (shift + 16 + 4 - 4)) & 0xF0]);
 
 	__m128i mc = _mm_shuffle_epi32(_mm_cvtsi32_si128(alpha), 0);
 
 	__m128i mcL = _mm_or_si128(_mm_and_si128(mMaskL, _mm_subs_epu8(mc, mtL)), _mm_andnot_si128(mMaskL, _mm_adds_epu8(mc, mtL)));
 	__m128i mcH = _mm_or_si128(_mm_and_si128(mMaskH, _mm_subs_epu8(mc, mtH)), _mm_andnot_si128(mMaskH, _mm_adds_epu8(mc, mtH)));
 
-	pL[0] = (BYTE)_mm_extract_epi16(mcL, 0);
-	pL[4] = (BYTE)_mm_extract_epi16(mcL, 2);
-	pL[8] = (BYTE)_mm_extract_epi16(mcL, 4);
-	pL[12] = (BYTE)_mm_extract_epi16(mcL, 6);
+	pL[0] = (uint8_t)_mm_extract_epi16(mcL, 0);
+	pL[4] = (uint8_t)_mm_extract_epi16(mcL, 2);
+	pL[8] = (uint8_t)_mm_extract_epi16(mcL, 4);
+	pL[12] = (uint8_t)_mm_extract_epi16(mcL, 6);
 
-	pH[0] = (BYTE)_mm_extract_epi16(mcH, 0);
-	pH[4] = (BYTE)_mm_extract_epi16(mcH, 2);
-	pH[8] = (BYTE)_mm_extract_epi16(mcH, 4);
-	pH[12] = (BYTE)_mm_extract_epi16(mcH, 6);
+	pH[0] = (uint8_t)_mm_extract_epi16(mcH, 0);
+	pH[4] = (uint8_t)_mm_extract_epi16(mcH, 2);
+	pH[8] = (uint8_t)_mm_extract_epi16(mcH, 4);
+	pH[12] = (uint8_t)_mm_extract_epi16(mcH, 6);
 }
 
-static __forceinline void DecompressBlockAlpha(const BYTE input[8], BYTE* __restrict cell)
+static __forceinline void DecompressBlockAlpha(const uint8_t input[8], uint8_t* __restrict cell)
 {
 	cell += 3;
 
@@ -452,7 +450,7 @@ static __forceinline void DecompressBlockAlpha(const BYTE input[8], BYTE* __rest
 
 	if ((c & (1 << 24)) == 0)
 	{
-		BYTE buffer[4 * 4];
+		uint8_t buffer[4 * 4];
 
 		int qa = (c >> (5 + 24)) & 7;
 		DecompressHalfAlpha(&buffer[0], &buffer[1], a, qa, way, 0);
@@ -460,7 +458,7 @@ static __forceinline void DecompressBlockAlpha(const BYTE input[8], BYTE* __rest
 		int qb = (c >> (2 + 24)) & 7;
 		DecompressHalfAlpha(&buffer[2], &buffer[3], b, qb, way, 8);
 
-		BYTE* dst = cell;
+		uint8_t* dst = cell;
 
 		dst[0] = buffer[0];
 		dst[4] = buffer[1];
@@ -517,7 +515,7 @@ struct BlockStateAlpha
 
 struct GuessStateAlpha
 {
-	__declspec(align(16)) Node node[0x11];
+	Node node[0x11] alignas(16);
 
 	__forceinline GuessStateAlpha()
 	{
@@ -546,7 +544,7 @@ struct GuessStateAlpha
 
 struct AdjustStateAlpha
 {
-	__declspec(align(16)) Node node[0x21];
+	Node node[0x21] alignas(16);
 
 	int swap[0x20];
 
@@ -929,12 +927,12 @@ static __forceinline int MeasureHalfAlpha(const int pL[4 * 4], const int pH[4 * 
 	return _mm_cvtsi128_si32(sum);
 }
 
-static __m128i CompressBlockAlpha(BYTE output[8], const BYTE* __restrict cell)
+static __m128i CompressBlockAlpha(uint8_t output[8], const uint8_t* __restrict cell)
 {
 	Elem norm, flip;
 
 	{
-		const BYTE* src = cell;
+		const uint8_t* src = cell;
 
 		int c00 = src[3]; flip.A.Data[0] = c00; norm.A.Data[0] = c00;
 		int c01 = src[7]; flip.A.Data[4] = c01; norm.A.Data[4] = c01;
@@ -975,13 +973,13 @@ static __m128i CompressBlockAlpha(BYTE output[8], const BYTE* __restrict cell)
 
 		if ((f & 2) == 0)
 		{
-			s.a = (BYTE)ExpandColor4(c0 >> 4);
-			s.b = (BYTE)ExpandColor4(c0 & 0xF);
+			s.a = (uint8_t)ExpandColor4(c0 >> 4);
+			s.b = (uint8_t)ExpandColor4(c0 & 0xF);
 		}
 		else
 		{
-			s.a = (BYTE)ExpandColor5(c0 >> 3);
-			s.b = (BYTE)ExpandColor5((c0 >> 3) + (int(uint32_t(c0) << 29) >> 29));
+			s.a = (uint8_t)ExpandColor5(c0 >> 3);
+			s.b = (uint8_t)ExpandColor5((c0 >> 3) + (int(uint32_t(c0) << 29) >> 29));
 		}
 
 		s.qa = (f >> 5) & 7;
@@ -1043,15 +1041,15 @@ static __m128i CompressBlockAlpha(BYTE output[8], const BYTE* __restrict cell)
 		ssim = ComputeTableAlpha(f ? flip.A : norm.A, s.a, s.qa, index, f ? 0xD951C840u : 0x73625140u);
 		ssim += ComputeTableAlpha(f ? flip.B : norm.B, s.b, s.qb, index, f ? 0xD951C840u + 0x22222222u : 0x73625140u + 0x88888888u);
 
-		BYTE c = (s.mode & 2) ?
-			(BYTE)((s.a & 0xF8) ^ (((s.b >> 3) - (s.a >> 3)) & 7)) :
-			(BYTE)((s.a & 0xF0) ^ (s.b & 0x0F));
+		uint8_t c = (s.mode & 2) ?
+			(uint8_t)((s.a & 0xF8) ^ (((s.b >> 3) - (s.a >> 3)) & 7)) :
+			(uint8_t)((s.a & 0xF0) ^ (s.b & 0x0F));
 
 		output[0] = c;
 		output[1] = c;
 		output[2] = c;
 
-		output[3] = (BYTE)((s.qa << 5) ^ (s.qb << 2) ^ s.mode);
+		output[3] = (uint8_t)((s.qa << 5) ^ (s.qb << 2) ^ s.mode);
 
 		*(uint32_t*)&output[4] = BSWAP(index);
 	}
@@ -1062,7 +1060,7 @@ static __m128i CompressBlockAlpha(BYTE output[8], const BYTE* __restrict cell)
 
 static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, int q, uint32_t data, int shift)
 {
-	static const __declspec(align(16)) int g_delta[8][2] =
+	static const int g_delta[8][2] alignas(16) =
 	{
 		{ 2 * 0x010101, (8 ^ 2) * 0x010101 },
 		{ 5 * 0x010101, (17 ^ 5) * 0x010101 },
@@ -1074,7 +1072,7 @@ static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, i
 		{ 47 * 0x010101, (183 ^ 47) * 0x010101 }
 	};
 
-	static const __declspec(align(16)) int g_mask[16][4] =
+	static const int g_mask[16][4] alignas(16) =
 	{
 		{ 0, 0, 0, 0 },{ -1, 0, 0, 0 },{ 0, -1, 0, 0 },{ -1, -1, 0, 0 },
 		{ 0, 0, -1, 0 },{ -1, 0, -1, 0 },{ 0, -1, -1, 0 },{ -1, -1, -1, 0 },
@@ -1085,14 +1083,14 @@ static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, i
 	__m128i mt0 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_delta[q][0]), 0);
 	__m128i mt10 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_delta[q][1]), 0);
 
-	__m128i mMaskL = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(shift < 4 ? data << (4 - shift) : data >> (shift - 4)) & 0xF0]);
-	__m128i mMaskH = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(data >> (shift + 4 - 4)) & 0xF0]);
+	__m128i mMaskL = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(shift < 4 ? data << (4 - shift) : data >> (shift - 4)) & 0xF0]);
+	__m128i mMaskH = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(data >> (shift + 4 - 4)) & 0xF0]);
 
 	__m128i mtL = _mm_xor_si128(_mm_and_si128(mMaskL, mt10), mt0);
 	__m128i mtH = _mm_xor_si128(_mm_and_si128(mMaskH, mt10), mt0);
 
-	mMaskL = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(data >> (shift + 16 + 0 - 4)) & 0xF0]);
-	mMaskH = _mm_load_si128((const __m128i*)&((const BYTE*)g_mask)[(data >> (shift + 16 + 4 - 4)) & 0xF0]);
+	mMaskL = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(data >> (shift + 16 + 0 - 4)) & 0xF0]);
+	mMaskH = _mm_load_si128((const __m128i*)&((const uint8_t*)g_mask)[(data >> (shift + 16 + 4 - 4)) & 0xF0]);
 
 	__m128i mc = _mm_shuffle_epi32(_mm_cvtsi32_si128(color), 0);
 
@@ -1103,7 +1101,7 @@ static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, i
 	_mm_storeu_si128((__m128i*)pH, mcH);
 }
 
-static __forceinline void DecompressBlockColor(const BYTE input[8], BYTE* __restrict cell)
+static __forceinline void DecompressBlockColor(const uint8_t input[8], uint8_t* __restrict cell)
 {
 	int a, b;
 
@@ -1132,7 +1130,7 @@ static __forceinline void DecompressBlockColor(const BYTE input[8], BYTE* __rest
 
 	if ((c & (1 << 24)) == 0)
 	{
-		__declspec(align(16)) int buffer[4][4];
+		int buffer[4][4] alignas(16);
 
 		int qa = (c >> (5 + 24)) & 7;
 		DecompressHalfColor(buffer[0], buffer[1], a, qa, way, 0);
@@ -1904,26 +1902,26 @@ static __forceinline void SortNodes20(Node nodes[0x20 + 1], int water)
 }
 
 
-static __forceinline __m128i load_color_BGRA(const BYTE color[4])
+static __forceinline __m128i load_color_BGRA(const uint8_t color[4])
 {
 	__m128i margb = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*(int*)color));
 
 	return _mm_shuffle_epi32(margb, _MM_SHUFFLE(3, 0, 2, 1));
 }
 
-static __forceinline __m128i load_color_GRB(const BYTE color[4])
+static __forceinline __m128i load_color_GRB(const uint8_t color[4])
 {
 	return _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*(int*)color));
 }
 
-static __forceinline __m128i load_color_GR(const BYTE color[2])
+static __forceinline __m128i load_color_GR(const uint8_t color[2])
 {
 	__m128i mrg = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*(uint16_t*)color));
 
 	return _mm_unpacklo_epi64(mrg, mrg);
 }
 
-static __forceinline int ComputeErrorGRB(const Half& half, const BYTE color[4], int water, int q)
+static __forceinline int ComputeErrorGRB(const Half& half, const uint8_t color[4], int water, int q)
 {
 	__m128i mc = load_color_GRB(color);
 
@@ -2063,7 +2061,7 @@ static __forceinline int ComputeErrorGRB(const Half& half, const BYTE color[4], 
 	return _mm_cvtsi128_si32(sum);
 }
 
-static __forceinline int ComputeErrorGR(const Half& half, const BYTE color[2], int water, int q)
+static __forceinline int ComputeErrorGR(const Half& half, const uint8_t color[2], int water, int q)
 {
 	__m128i mc = load_color_GR(color);
 
@@ -2231,13 +2229,13 @@ static __forceinline int ComputeErrorGR(const Half& half, const BYTE color[2], i
 
 struct BlockStateColor
 {
-	BYTE a[4], b[4];
+	uint8_t a[4], b[4];
 	int qa, qb, mode;
 };
 
 struct GuessStateColor
 {
-	__declspec(align(16)) Node node0[0x12], node1[0x12], node2[0x12];
+	Node node0[0x12] alignas(16), node1[0x12] alignas(16), node2[0x12] alignas(16);
 
 	int stop;
 
@@ -2282,7 +2280,7 @@ struct AdjustStateColor
 	uint32_t flag0, flag1, flag2;
 	int unused0, unused1, unused2;
 
-	__declspec(align(16)) Node node0[0x22], node1[0x22], node2[0x22];
+	Node node0[0x22] alignas(16), node1[0x22] alignas(16), node2[0x22] alignas(16);
 
 	int ErrorsG[0x20];
 	int ErrorsGR[0x20 * 0x20];
@@ -2291,7 +2289,7 @@ struct AdjustStateColor
 
 	int swap0[0x20], swap1[0x20], swap2[0x20];
 
-	__declspec(align(16)) Node diff0[0x20][10], diff1[0x20][10], diff2[0x20][10];
+	Node diff0[0x20][10] alignas(16), diff1[0x20][10] alignas(16), diff2[0x20][10] alignas(16);
 
 	__forceinline AdjustStateColor()
 	{
@@ -2334,7 +2332,7 @@ struct AdjustStateColor
 
 	__declspec(noinline) void DoWalk(const Half& half, int water, int q)
 	{
-		BYTE c[4];
+		uint8_t c[4];
 
 		int min01 = water - node2[0x20].Error;
 
@@ -2344,7 +2342,7 @@ struct AdjustStateColor
 			if (e0 + node1[0x20].Error + node2[0x20].Error >= water)
 				break;
 
-			c[0] = (BYTE)node0[c0].Color;
+			c[0] = (uint8_t)node0[c0].Color;
 
 			int min1 = water - node2[0x20].Error;
 
@@ -2354,7 +2352,7 @@ struct AdjustStateColor
 				if (e1 + node2[0x20].Error >= water)
 					break;
 
-				c[1] = (BYTE)node1[c1].Color;
+				c[1] = (uint8_t)node1[c1].Color;
 
 				e1 = ComputeErrorGR(half, c, water - node2[0x20].Error, q);
 
@@ -2386,7 +2384,7 @@ struct AdjustStateColor
 
 	__declspec(noinline) void DoBottom(const Half& half, int water, int q)
 	{
-		BYTE c[4];
+		uint8_t c[4];
 
 		int blue_max = 0xFF;
 		int minimum = Min(water, stop - node2[0x20].Error + (blue_max * blue_max * kBlue) * half.Count);
@@ -2400,7 +2398,7 @@ struct AdjustStateColor
 			if (ErrorsG[c0] + node2[0x20].Error >= minimum)
 				continue;
 
-			c[0] = (BYTE)node0[c0].Color;
+			c[0] = (uint8_t)node0[c0].Color;
 
 			for (int c1 = 0; c1 < node1[0x20].Color; c1++)
 			{
@@ -2413,7 +2411,7 @@ struct AdjustStateColor
 				if (e1 + node2[0x20].Error >= minimum)
 					continue;
 
-				c[1] = (BYTE)node1[c1].Color;
+				c[1] = (uint8_t)node1[c1].Color;
 
 				LazyGR[originGR] = false;
 
@@ -2428,7 +2426,7 @@ struct AdjustStateColor
 						continue;
 					}
 
-					c[2] = (BYTE)node2[c2].Color;
+					c[2] = (uint8_t)node2[c2].Color;
 
 					e2 = ComputeErrorGRB(half, c, water, q);
 					ErrorsGRB[c2 + origin] = e2;
@@ -2514,7 +2512,7 @@ struct AdjustStateColorGroup
 	}
 };
 
-static __forceinline double ComputeTableColor(const Half& half, const BYTE color[4], int q, uint32_t& index)
+static __forceinline double ComputeTableColor(const Half& half, const uint8_t color[4], int q, uint32_t& index)
 {
 	size_t halfSize = (size_t)(uint32_t)half.Count;
 	if (halfSize == 0)
@@ -2665,7 +2663,7 @@ static __forceinline double ComputeTableColor(const Half& half, const BYTE color
 	return best * (1.0 / 1000.0);
 }
 
-static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water, int& table)
+static __forceinline int GuessColor4(const Half& half, uint8_t color[4], int water, int& table)
 {
 	GuessStateColor S;
 
@@ -2678,7 +2676,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 
 		S.Sort(water);
 
-		BYTE c[4];
+		uint8_t c[4];
 
 		for (int c0 = 0; c0 < S.node0[0x10].Color; c0++)
 		{
@@ -2686,7 +2684,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 			if (e0 + S.node1[0x10].Error + S.node2[0x10].Error >= water)
 				break;
 
-			c[0] = (BYTE)S.node0[c0].Color;
+			c[0] = (uint8_t)S.node0[c0].Color;
 
 			for (int c1 = 0; c1 < S.node1[0x10].Color; c1++)
 			{
@@ -2694,7 +2692,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 				if (e1 + S.node2[0x10].Error >= water)
 					break;
 
-				c[1] = (BYTE)S.node1[c1].Color;
+				c[1] = (uint8_t)S.node1[c1].Color;
 
 				e1 = ComputeErrorGR(half, c, water - S.node2[0x10].Error, q);
 				if (e1 + S.node2[0x10].Error >= water)
@@ -2706,7 +2704,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 					if (e2 >= water)
 						break;
 
-					c[2] = (BYTE)S.node2[c2].Color;
+					c[2] = (uint8_t)S.node2[c2].Color;
 
 					e2 = ComputeErrorGRB(half, c, water, q);
 
@@ -2728,7 +2726,7 @@ static __forceinline int GuessColor4(const Half& half, BYTE color[4], int water,
 
 static int CompressBlockColor44(BlockStateColor &s, const Elem& elem, int water, int mode)
 {
-	BYTE a[4], b[4];
+	uint8_t a[4], b[4];
 	int qa, qb;
 
 	int err = GuessColor4(elem.A, a, water, qa);
@@ -2817,9 +2815,9 @@ static __forceinline int DifferentialColors3(int Id, uint32_t& flag, const Node 
 	return diff[0].Error;
 }
 
-static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE other[4], int water, int qa, int qb, AdjustStateColor& SA, AdjustStateColor& SB, int bestA, int bestB)
+static __forceinline int AdjustColors53(const Elem& elem, uint8_t color[4], uint8_t other[4], int water, int qa, int qb, AdjustStateColor& SA, AdjustStateColor& SB, int bestA, int bestB)
 {
-	BYTE a[4], b[4];
+	uint8_t a[4], b[4];
 
 	SB.Sort(water - bestA);
 	SB.Walk(elem.B, water - bestA, qb);
@@ -2852,7 +2850,7 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 		if (SA.ErrorsG[a0] + SA.node2[0x20].Error >= most)
 			continue;
 
-		a[0] = (BYTE)SA.node0[a0].Color;
+		a[0] = (uint8_t)SA.node0[a0].Color;
 
 		int Id0 = a[0] >> 3;
 		Node* diff0 = SB.diff0[Id0];
@@ -2874,7 +2872,7 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 
 			int a_origin = a_originGR << 5;
 
-			a[1] = (BYTE)SA.node1[a1].Color;
+			a[1] = (uint8_t)SA.node1[a1].Color;
 
 			int Id1 = a[1] >> 3;
 			Node* diff1 = SB.diff1[Id1];
@@ -2899,7 +2897,7 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 				if (e2 >= most)
 					break;
 
-				a[2] = (BYTE)SA.node2[a2].Color;
+				a[2] = (uint8_t)SA.node2[a2].Color;
 
 				int ea = SA.ErrorsGRB[a2 + a_origin];
 				if (ea < 0)
@@ -2963,9 +2961,9 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 							int eb = SB.ErrorsGRB[b2 + b_origin];
 							if (eb < 0)
 							{
-								b[0] = (BYTE)SB.node0[b0].Color;
-								b[1] = (BYTE)SB.node1[b1].Color;
-								b[2] = (BYTE)SB.node2[b2].Color;
+								b[0] = (uint8_t)SB.node0[b0].Color;
+								b[1] = (uint8_t)SB.node1[b1].Color;
+								b[2] = (uint8_t)SB.node2[b2].Color;
 
 								eb = ComputeErrorGRB(elem.B, b, water - bestA, qb);
 								SB.ErrorsGRB[b2 + b_origin] = eb;
@@ -2980,9 +2978,9 @@ static __forceinline int AdjustColors53(const Elem& elem, BYTE color[4], BYTE ot
 
 								memcpy(color, a, 4);
 
-								other[0] = (BYTE)SB.node0[b0].Color;
-								other[1] = (BYTE)SB.node1[b1].Color;
-								other[2] = (BYTE)SB.node2[b2].Color;
+								other[0] = (uint8_t)SB.node0[b0].Color;
+								other[1] = (uint8_t)SB.node1[b1].Color;
+								other[2] = (uint8_t)SB.node2[b2].Color;
 							}
 						}
 					}
@@ -3045,7 +3043,7 @@ static int CompressBlockColor53(BlockStateColor &s, const Elem& elem, int water,
 	return water;
 }
 
-static __forceinline int MeasureHalfColor(const int pL[4 * 4], const int pH[4 * 4], const BYTE color[4], int q, uint32_t dataL, uint32_t dataH, int slice, int shift)
+static __forceinline int MeasureHalfColor(const int pL[4 * 4], const int pH[4 * 4], const uint8_t color[4], int q, uint32_t dataL, uint32_t dataH, int slice, int shift)
 {
 	__m128i mc = load_color_GRB(color);
 
@@ -3194,12 +3192,12 @@ static double EstimateChromaDispersion(const Half& half)
 	return (srr * n - sr * sr) * g_r_nn[n - 2] + (sbb * n - sb * sb) * g_b_nn[n - 2];
 }
 
-static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
+static __m128i CompressBlockColor(uint8_t output[8], const uint8_t* __restrict cell)
 {
 	Elem norm, flip;
 
 	{
-		const BYTE* src = cell;
+		const uint8_t* src = cell;
 
 		__m128i c00 = load_color_BGRA(src + 0); _mm_store_si128((__m128i*)(flip.A.Data + 0), c00); _mm_store_si128((__m128i*)(norm.A.Data + 0), c00);
 		__m128i c01 = load_color_BGRA(src + 4); _mm_store_si128((__m128i*)(flip.A.Data + 4), c01); _mm_store_si128((__m128i*)(norm.A.Data + 4), c01);
@@ -3242,23 +3240,23 @@ static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
 
 		if ((f & 2) == 0)
 		{
-			s.a[0] = (BYTE)ExpandColor4(c0 >> 4);
-			s.a[1] = (BYTE)ExpandColor4(c1 >> 4);
-			s.a[2] = (BYTE)ExpandColor4(c2 >> 4);
+			s.a[0] = (uint8_t)ExpandColor4(c0 >> 4);
+			s.a[1] = (uint8_t)ExpandColor4(c1 >> 4);
+			s.a[2] = (uint8_t)ExpandColor4(c2 >> 4);
 
-			s.b[0] = (BYTE)ExpandColor4(c0 & 0xF);
-			s.b[1] = (BYTE)ExpandColor4(c1 & 0xF);
-			s.b[2] = (BYTE)ExpandColor4(c2 & 0xF);
+			s.b[0] = (uint8_t)ExpandColor4(c0 & 0xF);
+			s.b[1] = (uint8_t)ExpandColor4(c1 & 0xF);
+			s.b[2] = (uint8_t)ExpandColor4(c2 & 0xF);
 		}
 		else
 		{
-			s.a[0] = (BYTE)ExpandColor5(c0 >> 3);
-			s.a[1] = (BYTE)ExpandColor5(c1 >> 3);
-			s.a[2] = (BYTE)ExpandColor5(c2 >> 3);
+			s.a[0] = (uint8_t)ExpandColor5(c0 >> 3);
+			s.a[1] = (uint8_t)ExpandColor5(c1 >> 3);
+			s.a[2] = (uint8_t)ExpandColor5(c2 >> 3);
 
-			s.b[0] = (BYTE)ExpandColor5((c0 >> 3) + (int(uint32_t(c0) << 29) >> 29));
-			s.b[1] = (BYTE)ExpandColor5((c1 >> 3) + (int(uint32_t(c1) << 29) >> 29));
-			s.b[2] = (BYTE)ExpandColor5((c2 >> 3) + (int(uint32_t(c2) << 29) >> 29));
+			s.b[0] = (uint8_t)ExpandColor5((c0 >> 3) + (int(uint32_t(c0) << 29) >> 29));
+			s.b[1] = (uint8_t)ExpandColor5((c1 >> 3) + (int(uint32_t(c1) << 29) >> 29));
+			s.b[2] = (uint8_t)ExpandColor5((c2 >> 3) + (int(uint32_t(c2) << 29) >> 29));
 		}
 
 		s.qa = (f >> 5) & 7;
@@ -3355,9 +3353,9 @@ static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
 
 		if (s.mode & 2)
 		{
-			output[0] = (BYTE)((s.a[1] & 0xF8) ^ (((s.b[1] >> 3) - (s.a[1] >> 3)) & 7));
-			output[1] = (BYTE)((s.a[0] & 0xF8) ^ (((s.b[0] >> 3) - (s.a[0] >> 3)) & 7));
-			output[2] = (BYTE)((s.a[2] & 0xF8) ^ (((s.b[2] >> 3) - (s.a[2] >> 3)) & 7));
+			output[0] = (uint8_t)((s.a[1] & 0xF8) ^ (((s.b[1] >> 3) - (s.a[1] >> 3)) & 7));
+			output[1] = (uint8_t)((s.a[0] & 0xF8) ^ (((s.b[0] >> 3) - (s.a[0] >> 3)) & 7));
+			output[2] = (uint8_t)((s.a[2] & 0xF8) ^ (((s.b[2] >> 3) - (s.a[2] >> 3)) & 7));
 		}
 		else
 		{
@@ -3366,7 +3364,7 @@ static __m128i CompressBlockColor(BYTE output[8], const BYTE* __restrict cell)
 			output[2] = (s.a[2] & 0xF0) ^ (s.b[2] & 0x0F);
 		}
 
-		output[3] = (BYTE)((s.qa << 5) ^ (s.qb << 2) ^ s.mode);
+		output[3] = (uint8_t)((s.qa << 5) ^ (s.qb << 2) ^ s.mode);
 
 		*(uint32_t*)&output[4] = BSWAP(index);
 	}
@@ -3387,14 +3385,14 @@ public:
 	class Item
 	{
 	public:
-		BYTE* _Output;
-		BYTE* _Cell;
+		uint8_t* _Output;
+		uint8_t* _Cell;
 
 		Item()
 		{
 		}
 
-		Item(BYTE* output, BYTE* cell)
+		Item(uint8_t* output, uint8_t* cell)
 		{
 			_Output = output;
 			_Cell = cell;
@@ -3453,7 +3451,7 @@ public:
 			throw std::runtime_error("init");
 
 		_Done = CreateEvent(NULL, FALSE, FALSE, NULL);
-		if (_Done == NULL)
+		if (_Done == nullptr)
 			throw std::runtime_error("init");
 
 		_First = nullptr;
@@ -3593,7 +3591,10 @@ public:
 
 		for (int i = 0; i < n; i++)
 		{
-			CreateThread(NULL, WorkerThreadStackSize, ThreadProc, this, 0, NULL);
+			HANDLE hthread = CreateThread(NULL, WorkerThreadStackSize, ThreadProc, this, 0, NULL);
+			if (hthread == nullptr)
+				throw std::runtime_error("fork");
+			CloseHandle(hthread);
 		}
 
 		WaitForSingleObject(_Done, INFINITE);
@@ -3602,7 +3603,7 @@ public:
 	}
 };
 
-static bool ReadImage(const char* src_name, BYTE* &pixels, int &width, int &height, bool flip)
+static bool ReadImage(const char* src_name, uint8_t* &pixels, int &width, int &height, bool flip)
 {
 	ULONG_PTR gdiplusToken;
 
@@ -3624,12 +3625,12 @@ static bool ReadImage(const char* src_name, BYTE* &pixels, int &width, int &heig
 		{
 			int stride = width << 2;
 
-			pixels = new BYTE[height * stride];
+			pixels = new uint8_t[height * stride];
 
-			BYTE* w = pixels;
+			uint8_t* w = pixels;
 			for (int y = 0; y < height; y++)
 			{
-				const BYTE* r = (const BYTE*)data.Scan0 + (flip ? height - 1 - y : y) * data.Stride;
+				const uint8_t* r = (const uint8_t*)data.Scan0 + (flip ? height - 1 - y : y) * data.Stride;
 				memcpy(w, r, stride);
 				w += stride;
 			}
@@ -3646,7 +3647,7 @@ static bool ReadImage(const char* src_name, BYTE* &pixels, int &width, int &heig
 	return pixels != nullptr;
 }
 
-static void WriteImage(const char* dst_name, const BYTE* pixels, int w, int h, bool flip)
+static void WriteImage(const char* dst_name, const uint8_t* pixels, int w, int h, bool flip)
 {
 	ULONG_PTR gdiplusToken;
 
@@ -3661,7 +3662,7 @@ static void WriteImage(const char* dst_name, const BYTE* pixels, int w, int h, b
 		{
 			for (int y = 0; y < h; y++)
 			{
-				memcpy((BYTE*)data.Scan0 + (flip ? h - 1 - y : y) * data.Stride, pixels + y * w * 4, w * 4);
+				memcpy((uint8_t*)data.Scan0 + (flip ? h - 1 - y : y) * data.Stride, pixels + y * w * 4, w * 4);
 			}
 
 			bitmap.UnlockBits(&data);
@@ -3674,7 +3675,7 @@ static void WriteImage(const char* dst_name, const BYTE* pixels, int w, int h, b
 			Gdiplus::GetImageEncodersSize(&num, &size);
 			if (size >= num * sizeof(Gdiplus::ImageCodecInfo))
 			{
-				Gdiplus::ImageCodecInfo* pArray = (Gdiplus::ImageCodecInfo*)new BYTE[size];
+				Gdiplus::ImageCodecInfo* pArray = (Gdiplus::ImageCodecInfo*)new uint8_t[size];
 				Gdiplus::GetImageEncoders(num, size, pArray);
 
 				for (UINT i = 0; i < num; ++i)
@@ -3687,7 +3688,7 @@ static void WriteImage(const char* dst_name, const BYTE* pixels, int w, int h, b
 					}
 				}
 
-				delete[](BYTE*)pArray;
+				delete[](uint8_t*)pArray;
 			}
 		}
 		if (ok)
@@ -3704,7 +3705,7 @@ static void WriteImage(const char* dst_name, const BYTE* pixels, int w, int h, b
 	Gdiplus::GdiplusShutdown(gdiplusToken);
 }
 
-static void LoadEtc1(const char* name, BYTE* buffer, int size)
+static void LoadEtc1(const char* name, uint8_t* buffer, int size)
 {
 	HANDLE file = CreateFile(name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
 	if (file != INVALID_HANDLE_VALUE)
@@ -3721,21 +3722,23 @@ static void LoadEtc1(const char* name, BYTE* buffer, int size)
 	}
 }
 
-static void SaveEtc1(const char* name, const BYTE* buffer, int size)
+static void SaveEtc1(const char* name, const uint8_t* buffer, int size)
 {
+	bool ok = false;
+
 	HANDLE file = CreateFile(name, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file != INVALID_HANDLE_VALUE)
 	{
 		DWORD transferred;
-		WriteFile(file, buffer, size, &transferred, NULL);
+		ok = (WriteFile(file, buffer, size, &transferred, NULL) != 0);
 
 		CloseHandle(file);
-
-		printf("Saved %s\n", name);
 	}
+
+	printf(ok ? "Saved %s\n" : "Lost %s\n", name);
 }
 
-static __m128i PackTexture(BYTE* dst_etc1, BYTE* src_bgra, int src_w, int src_h, PackMode mode)
+static __m128i PackTexture(uint8_t* dst_etc1, uint8_t* src_bgra, int src_w, int src_h, PackMode mode)
 {
 	auto start = std::chrono::high_resolution_clock::now();
 
@@ -3743,7 +3746,7 @@ static __m128i PackTexture(BYTE* dst_etc1, BYTE* src_bgra, int src_w, int src_h,
 	double ssim = 0;
 
 	{
-		BYTE* output = dst_etc1;
+		uint8_t* output = dst_etc1;
 
 		Worker* worker = new Worker();
 
@@ -3751,7 +3754,7 @@ static __m128i PackTexture(BYTE* dst_etc1, BYTE* src_bgra, int src_w, int src_h,
 
 		for (int y = 0; y < src_h; y += 4)
 		{
-			BYTE* cell = src_bgra + y * Stride;
+			uint8_t* cell = src_bgra + y * Stride;
 
 			for (int x = 0; x < src_w; x += 4)
 			{
@@ -3790,7 +3793,7 @@ static __m128i PackTexture(BYTE* dst_etc1, BYTE* src_bgra, int src_w, int src_h,
 	return _mm_unpacklo_epi64(_mm_cvtsi64_si128(mse), _mm_castpd_si128(_mm_load_sd(&ssim)));
 }
 
-static __forceinline void OutlineAlpha(BYTE* src_bgra, int src_w, int src_h, int radius)
+static __forceinline void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int radius)
 {
 	if (radius <= 0)
 		return;
@@ -3798,13 +3801,13 @@ static __forceinline void OutlineAlpha(BYTE* src_bgra, int src_w, int src_h, int
 	int full_w = 1 + radius + src_w + radius;
 	int full_h = 1 + radius + src_h + radius;
 
-	BYTE* data = new BYTE[full_h * full_w];
+	uint8_t* data = new uint8_t[full_h * full_w];
 	memset(data, 0, full_h * full_w);
 
 	for (int y = 0; y < src_h; y++)
 	{
-		const BYTE* r = &src_bgra[y * Stride + 3];
-		BYTE* w = &data[(y + radius + 1) * full_w + (radius + 1)];
+		const uint8_t* r = &src_bgra[y * Stride + 3];
+		uint8_t* w = &data[(y + radius + 1) * full_w + (radius + 1)];
 
 		for (int x = 0; x < src_w; x++)
 		{
@@ -3830,7 +3833,7 @@ static __forceinline void OutlineAlpha(BYTE* src_bgra, int src_w, int src_h, int
 	int a = radius + radius + 1;
 	for (int y = 0; y < src_h; y++)
 	{
-		BYTE* w = &src_bgra[y * Stride + 3];
+		uint8_t* w = &src_bgra[y * Stride + 3];
 		const int* rL = &sum[y * full_w];
 		const int* rH = &sum[(y + a) * full_w];
 
@@ -3907,7 +3910,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 		return 1;
 	}
 
-	BYTE* src_image_bgra;
+	uint8_t* src_image_bgra;
 	int src_image_w, src_image_h;
 
 	if (!ReadImage(src_name, src_image_bgra, src_image_w, src_image_h, flip))
@@ -3936,7 +3939,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 	int src_image_stride = src_image_w * c;
 	int src_texture_stride = src_texture_w * c;
 
-	BYTE* src_texture_bgra = new BYTE[src_texture_h * src_texture_stride];
+	uint8_t* src_texture_bgra = new uint8_t[src_texture_h * src_texture_stride];
 
 	for (int i = 0; i < src_image_h; i++)
 	{
@@ -3957,7 +3960,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 
 	Stride = src_texture_stride;
 
-	BYTE* dst_texture_bgra = new BYTE[src_texture_h * src_texture_stride];
+	uint8_t* dst_texture_bgra = new uint8_t[src_texture_h * src_texture_stride];
 
 	int Size = (src_texture_h * src_texture_w) >> 1;
 
@@ -3967,7 +3970,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 
 	if ((dst_alpha_name != nullptr) && dst_alpha_name[0])
 	{
-		BYTE* dst_alpha_etc1 = new BYTE[Size];
+		uint8_t* dst_alpha_etc1 = new uint8_t[Size];
 		memset(dst_alpha_etc1, 0, Size);
 
 		LoadEtc1(dst_alpha_name, dst_alpha_etc1, Size);
@@ -3996,13 +3999,13 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 
 	if ((dst_color_name != nullptr) && dst_color_name[0])
 	{
-		BYTE* dst_texture_color = new BYTE[src_texture_h * src_texture_stride];
+		uint8_t* dst_texture_color = new uint8_t[src_texture_h * src_texture_stride];
 
 		memcpy(dst_texture_color, dst_texture_bgra, src_texture_h * src_texture_stride);
 
 		OutlineAlpha(dst_texture_color, src_texture_w, src_texture_h, border);
 
-		BYTE* dst_color_etc1 = new BYTE[Size];
+		uint8_t* dst_color_etc1 = new uint8_t[Size];
 		memset(dst_color_etc1, 0, Size);
 
 		LoadEtc1(dst_color_name, dst_color_etc1, Size);
@@ -4030,7 +4033,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 
 		for (int y = 0; y < src_texture_h; y++)
 		{
-			BYTE* cell = dst_texture_color + y * src_texture_stride;
+			uint8_t* cell = dst_texture_color + y * src_texture_stride;
 
 			for (int x = 0; x < src_texture_w; x++)
 			{
@@ -4056,7 +4059,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 		{
 			for (int y = 0; y < src_texture_h; y++)
 			{
-				BYTE* cell = dst_texture_bgra + y * src_texture_stride;
+				uint8_t* cell = dst_texture_bgra + y * src_texture_stride;
 
 				for (int x = 0; x < src_texture_w; x++)
 				{
