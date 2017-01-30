@@ -444,7 +444,13 @@ static __forceinline void DecompressBlockAlpha(const uint8_t input[8], uint8_t* 
 	else
 	{
 		a = c & 0xF8;
-		b = (((((c & 0x07) ^ 0x24) - 0x04) << 3) + a) & 0xF8;
+		b = ((((c & 0x07) ^ 0x44) - 0x04) << 3) + a;
+		if (b & 0x0100)
+		{
+			__debugbreak();
+			return;
+		}
+		b &= 0xF8;
 
 		a |= (a >> 5) & 0x07;
 		b |= (b >> 5) & 0x07;
@@ -1121,7 +1127,13 @@ static __forceinline void DecompressBlockColor(const uint8_t input[8], uint8_t* 
 	else
 	{
 		a = c & 0xF8F8F8;
-		b = (((((c & 0x070707) ^ 0x242424) - 0x040404) << 3) + a) & 0xF8F8F8;
+		b = ((((c & 0x070707) ^ 0x444444) - 0x040404) << 3) + a;
+		if (b & 0x01010100)
+		{
+			__debugbreak();
+			return;
+		}
+		b &= 0xF8F8F8;
 
 		a |= (a >> 5) & 0x070707;
 		b |= (b >> 5) & 0x070707;
