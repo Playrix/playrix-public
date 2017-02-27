@@ -6,11 +6,13 @@
 //
 // LICENSE: https://mit-license.org
 
+#ifdef WIN32
 #include <windows.h>
 #pragma warning(push)
 #pragma warning(disable : 4458)
 #include <gdiplus.h>
 #pragma warning(pop)
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,9 +26,26 @@
 #include <thread>
 #include <vector>
 
+#ifndef WIN32
+#include <boost/thread.hpp>
+#ifdef __APPLE__
+#include <libkern/OSByteOrder.h>
+#else
+#include <byteswap.h>
+#endif
+#endif
+
+#ifdef WIN32
 #pragma comment(lib, "gdiplus.lib")
 
+#define INLINED __forceinline
+#define NOTINLINED __declspec(noinline)
 #define M128I_I32(mm, index) ((mm).m128i_i32[index])
+#else
+#define INLINED __attribute__((always_inline))
+#define NOTINLINED __attribute__((noinline))
+#define M128I_I32(mm, index) (reinterpret_cast<int32_t(&)[4]>(mm)[index])
+#endif
 
 typedef struct alignas(16) { int Data[8 * 4]; int Count, unused; uint8_t Shift[8]; } Half;
 typedef struct alignas(16) { Half A, B; } Elem;
@@ -36,12 +55,12 @@ typedef struct alignas(8) { int Error, Color; } Node;
 // http://www.brucelindbloom.com/index.html?WorkingSpaceInfo.html sRGB
 enum { kGreen = 715, kRed = 213, kBlue = 72, kUnknownError = (255 * 255) * 1000 * (4 * 4) + 1 };
 
-static const int g_table[8][2] alignas(16) = { { 2, 8 },{ 5, 17 },{ 9, 29 },{ 13, 42 },{ 18, 60 },{ 24, 80 },{ 33, 106 },{ 47, 183 } };
+alignas(16) static const int g_table[8][2] = { { 2, 8 },{ 5, 17 },{ 9, 29 },{ 13, 42 },{ 18, 60 },{ 24, 80 },{ 33, 106 },{ 47, 183 } };
 
-static const short g_GRB_I16[8] alignas(16) = { kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue, 0 };
-static const short g_GR_I16[8] alignas(16) = { kGreen, kRed, kGreen, kRed, kGreen, kRed, kGreen, kRed };
+alignas(16) static const short g_GRB_I16[8] = { kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue, 0 };
+alignas(16) static const short g_GR_I16[8] = { kGreen, kRed, kGreen, kRed, kGreen, kRed, kGreen, kRed };
 
-static const int g_colors4[0x10] alignas(16) =
+alignas(16) static const int g_colors4[0x10] =
 {
 	0x00, 0x11, 0x22, 0x33,
 	0x44, 0x55, 0x66, 0x77,
@@ -49,7 +68,7 @@ static const int g_colors4[0x10] alignas(16) =
 	0xCC, 0xDD, 0xEE, 0xFF
 };
 
-static const int g_colors5[0x20] alignas(16) =
+alignas(16) static const int g_colors5[0x20] =
 {
 	0x00, 0x08, 0x10, 0x18,
 	0x21, 0x29, 0x31, 0x39,
@@ -64,44 +83,68 @@ static const int g_colors5[0x20] alignas(16) =
 static __m128i g_errors4[8][0x100][0x10 >> 2];
 static __m128i g_errors5[8][0x100][0x20 >> 2];
 
-static const double g_ssim_nk1L = (0.01 * 255 * 8) * (0.01 * 255 * 8);
-static const double g_ssim_nk2L = (0.03 * 255 * 8) * (0.03 * 255 * 8);
+static const double g_ssim_8k1L = (0.01 * 255 * 8) * (0.01 * 255 * 8);
+static const double g_ssim_8k2L = g_ssim_8k1L * 9;
 
 static const int WorkerThreadStackSize = 3 * 1024 * 1024;
 
 static int Stride;
 
-static __forceinline uint32_t BSWAP(uint32_t x)
+#ifdef WIN32
+
+static INLINED uint32_t BSWAP(uint32_t x)
 {
 	return _byteswap_ulong(x);
 }
 
-static __forceinline uint32_t BROR(uint32_t x)
+static INLINED uint32_t BROR(uint32_t x)
 {
 	return _rotr(x, 8);
 }
 
-static __forceinline int Min(int x, int y)
+#else
+
+static INLINED uint32_t BSWAP(uint32_t x)
+{
+#ifdef __APPLE__
+	return OSSwapInt32(x);
+#else
+	return bswap_32(x);
+#endif
+}
+
+static INLINED uint32_t BROR(uint32_t x)
+{
+	return (x >> 8) | (x << (32 - 8));
+}
+
+static INLINED void __debugbreak()
+{
+}
+
+#endif
+
+static INLINED int Min(int x, int y)
 {
 	return (x < y) ? x : y;
 }
 
-static __forceinline int Max(int x, int y)
+static INLINED int Max(int x, int y)
 {
 	return (x > y) ? x : y;
 }
 
-static __forceinline int ExpandColor5(int c)
+static INLINED int ExpandColor5(int c)
 {
 	return (c << 3) ^ (c >> 2);
 }
 
-static __forceinline int ExpandColor4(int c)
+static INLINED int ExpandColor4(int c)
 {
 	return (c << 4) ^ c;
 }
 
-static __forceinline __m128i HorizontalMinimum4(__m128i me4)
+static INLINED __m128i HorizontalMinimum4(__m128i me4)
 {
 	__m128i me2 = _mm_min_epi32(me4, _mm_shuffle_epi32(me4, _MM_SHUFFLE(2, 3, 0, 1)));
 	__m128i me1 = _mm_min_epi32(me2, _mm_shuffle_epi32(me2, _MM_SHUFFLE(0, 1, 2, 3)));
@@ -151,7 +194,7 @@ static void InitLevelErrors()
 	}
 }
 
-static __forceinline void GuessLevels(const Half& half, size_t offset, Node nodes[0x10 + 1], int weight, int water, int q)
+static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10 + 1], int weight, int water, int q)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
@@ -239,7 +282,7 @@ static __forceinline void GuessLevels(const Half& half, size_t offset, Node node
 #undef STORE_QUAD
 }
 
-static __forceinline void AdjustLevels(const Half& half, size_t offset, Node nodes[0x20 + 1], int weight, int water, int q)
+static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x20 + 1], int weight, int water, int q)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
@@ -352,9 +395,9 @@ static __forceinline void AdjustLevels(const Half& half, size_t offset, Node nod
 	sab = _mm_add_epi32(sab, _mm_mullo_epi16(a, b)); \
 	saa_sbb = _mm_add_epi32(saa_sbb, _mm_add_epi32(_mm_mullo_epi16(a, a), _mm_mullo_epi16(b, b))); \
 
-#define SSIM_CLOSE() \
-	sab = _mm_slli_epi32(sab, 3 + 1); \
-	saa_sbb = _mm_slli_epi32(saa_sbb, 3); \
+#define SSIM_CLOSE(shift) \
+	sab = _mm_slli_epi32(sab, shift + 1); \
+	saa_sbb = _mm_slli_epi32(saa_sbb, shift); \
 	__m128i sasb = _mm_mullo_epi32(sa, sb); \
 	sasb = _mm_add_epi32(sasb, sasb); \
 	__m128i sasa_sbsb = _mm_add_epi32(_mm_mullo_epi32(sa, sa), _mm_mullo_epi32(sb, sb)); \
@@ -367,20 +410,20 @@ static __forceinline void AdjustLevels(const Half& half, size_t offset, Node nod
 	sasb = _mm_unpackhi_epi64(sasb, sasb); \
 	sasa_sbsb = _mm_unpackhi_epi64(sasa_sbsb, sasa_sbsb); \
 
-#define SSIM_FINAL(dst) \
+#define SSIM_FINAL(dst, p1, p2) \
 	__m128d dst; \
 	{ \
-		__m128d mc1 = _mm_load1_pd(&g_ssim_nk1L); \
-		__m128d mc2 = _mm_load1_pd(&g_ssim_nk2L); \
+		__m128d mp1 = _mm_load1_pd(&p1); \
+		__m128d mp2 = _mm_load1_pd(&p2); \
 		dst = _mm_div_pd( \
-			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasb), mc1), _mm_add_pd(_mm_cvtepi32_pd(sab), mc2)), \
-			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasa_sbsb), mc1), _mm_add_pd(_mm_cvtepi32_pd(saa_sbb), mc2))); \
+			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasb), mp1), _mm_add_pd(_mm_cvtepi32_pd(sab), mp2)), \
+			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasa_sbsb), mp1), _mm_add_pd(_mm_cvtepi32_pd(saa_sbb), mp2))); \
 	} \
 
 
-static __forceinline void DecompressHalfAlpha(uint8_t pL[4 * 4 - 3], uint8_t pH[4 * 4 - 3], int alpha, int q, uint32_t data, int shift)
+static INLINED void DecompressHalfAlpha(uint8_t pL[4 * 4 - 3], uint8_t pH[4 * 4 - 3], int alpha, int q, uint32_t data, int shift)
 {
-	static const int g_delta[8][2] alignas(16) =
+	alignas(16) static const int g_delta[8][2] =
 	{
 		{ 2, (8 ^ 2) },
 		{ 5, (17 ^ 5) },
@@ -392,7 +435,7 @@ static __forceinline void DecompressHalfAlpha(uint8_t pL[4 * 4 - 3], uint8_t pH[
 		{ 47, (183 ^ 47) }
 	};
 
-	static const int g_mask[16][4] alignas(16) =
+	alignas(16) static const int g_mask[16][4] =
 	{
 		{ 0, 0, 0, 0 },{ -1, 0, 0, 0 },{ 0, -1, 0, 0 },{ -1, -1, 0, 0 },
 		{ 0, 0, -1, 0 },{ -1, 0, -1, 0 },{ 0, -1, -1, 0 },{ -1, -1, -1, 0 },
@@ -428,7 +471,7 @@ static __forceinline void DecompressHalfAlpha(uint8_t pL[4 * 4 - 3], uint8_t pH[
 	pH[12] = (uint8_t)_mm_extract_epi16(mcH, 6);
 }
 
-static __forceinline void DecompressBlockAlpha(const uint8_t input[8], uint8_t* __restrict cell)
+static INLINED void DecompressBlockAlpha(const uint8_t input[8], uint8_t* __restrict cell)
 {
 	cell += 3;
 
@@ -525,20 +568,20 @@ struct BlockStateAlpha
 
 struct GuessStateAlpha
 {
-	Node node[0x11] alignas(16);
+	alignas(16) Node node[0x11];
 
-	__forceinline GuessStateAlpha()
+	INLINED GuessStateAlpha()
 	{
 	}
 
-	__forceinline int Init(const Half& half, int water, int q)
+	INLINED int Init(const Half& half, int water, int q)
 	{
 		GuessLevels(half, 0, node, 1, water, q);
 
 		return node[0x10].Error;
 	}
 
-	__forceinline int Find(int error)
+	INLINED int Find(int error)
 	{
 		for (int c = 0, n = node[0x10].Color; c < n; c++)
 		{
@@ -554,7 +597,7 @@ struct GuessStateAlpha
 
 struct AdjustStateAlpha
 {
-	Node node[0x21] alignas(16);
+	alignas(16) Node node[0x21];
 
 	int swap[0x20];
 
@@ -562,11 +605,11 @@ struct AdjustStateAlpha
 
 	bool flag_swap;
 
-	__forceinline AdjustStateAlpha()
+	INLINED AdjustStateAlpha()
 	{
 	}
 
-	__forceinline void Init(const Half& half, int water, int q)
+	INLINED void Init(const Half& half, int water, int q)
 	{
 		flag_swap = false;
 
@@ -575,7 +618,7 @@ struct AdjustStateAlpha
 		stop = node[0x20].Error;
 	}
 
-	__forceinline void Index()
+	INLINED void Index()
 	{
 		if (flag_swap)
 			return;
@@ -595,11 +638,11 @@ struct AdjustStateAlphaGroup
 {
 	AdjustStateAlpha S[8];
 
-	__forceinline AdjustStateAlphaGroup()
+	INLINED AdjustStateAlphaGroup()
 	{
 	}
 
-	__forceinline void Init(const Half& half, int water)
+	INLINED void Init(const Half& half, int water)
 	{
 		for (int q = 0; q < 8; q++)
 		{
@@ -607,7 +650,7 @@ struct AdjustStateAlphaGroup
 		}
 	}
 
-	__forceinline int Best(int water) const
+	INLINED int Best(int water) const
 	{
 		int best = water;
 
@@ -620,7 +663,7 @@ struct AdjustStateAlphaGroup
 	}
 };
 
-static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q, uint32_t& index, uint32_t order)
+static INLINED double ComputeTableAlpha(const Half& half, int alpha, int q, uint32_t& index, uint32_t order)
 {
 	__m128i ma = _mm_cvtsi32_si128(alpha);
 	ma = _mm_unpacklo_epi32(ma, ma);
@@ -675,9 +718,9 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 			SSIM_UPDATE(mt, mb);
 		}
 
-		SSIM_CLOSE();
+		SSIM_CLOSE(3);
 
-		SSIM_FINAL(mssim);
+		SSIM_FINAL(mssim, g_ssim_8k1L, g_ssim_8k2L);
 
 		double ssim = _mm_cvtsd_f64(mssim);
 
@@ -738,7 +781,7 @@ static __forceinline double ComputeTableAlpha(const Half& half, int alpha, int q
 	return best;
 }
 
-static __forceinline int GuessAlpha4(const Half& half, int& alpha, int water, int& table)
+static INLINED int GuessAlpha4(const Half& half, int& alpha, int water, int& table)
 {
 	GuessStateAlpha SA;
 
@@ -782,7 +825,7 @@ static int CompressBlockAlpha44(BlockStateAlpha& s, const Elem& elem, int water,
 	return err;
 }
 
-static __forceinline int AdjustAlphas53(int& alpha, int& other, int water, AdjustStateAlpha& SA, AdjustStateAlpha& SB)
+static INLINED int AdjustAlphas53(int& alpha, int& other, int water, AdjustStateAlpha& SA, AdjustStateAlpha& SB)
 {
 	SB.Index();
 
@@ -871,7 +914,7 @@ static int CompressBlockAlpha53(BlockStateAlpha& s, const Elem& elem, int water,
 	return water;
 }
 
-static __forceinline int MeasureHalfAlpha(const int pL[4 * 4], const int pH[4 * 4], int alpha, int q, uint32_t dataL, uint32_t dataH, int slice, int shift)
+static INLINED int MeasureHalfAlpha(const int pL[4 * 4], const int pH[4 * 4], int alpha, int q, uint32_t dataL, uint32_t dataH, int slice, int shift)
 {
 	__m128i ma = _mm_cvtsi32_si128(alpha);
 	ma = _mm_unpacklo_epi32(ma, ma);
@@ -1068,9 +1111,9 @@ static __m128i CompressBlockAlpha(uint8_t output[8], const uint8_t* __restrict c
 }
 
 
-static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, int q, uint32_t data, int shift)
+static INLINED void DecompressHalfColor(int pL[4], int pH[4], int color, int q, uint32_t data, int shift)
 {
-	static const int g_delta[8][2] alignas(16) =
+	alignas(16) static const int g_delta[8][2] =
 	{
 		{ 2 * 0x010101, (8 ^ 2) * 0x010101 },
 		{ 5 * 0x010101, (17 ^ 5) * 0x010101 },
@@ -1082,7 +1125,7 @@ static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, i
 		{ 47 * 0x010101, (183 ^ 47) * 0x010101 }
 	};
 
-	static const int g_mask[16][4] alignas(16) =
+	alignas(16) static const int g_mask[16][4] =
 	{
 		{ 0, 0, 0, 0 },{ -1, 0, 0, 0 },{ 0, -1, 0, 0 },{ -1, -1, 0, 0 },
 		{ 0, 0, -1, 0 },{ -1, 0, -1, 0 },{ 0, -1, -1, 0 },{ -1, -1, -1, 0 },
@@ -1111,7 +1154,7 @@ static __forceinline void DecompressHalfColor(int pL[4], int pH[4], int color, i
 	_mm_storeu_si128((__m128i*)pH, mcH);
 }
 
-static __forceinline void DecompressBlockColor(const uint8_t input[8], uint8_t* __restrict cell)
+static INLINED void DecompressBlockColor(const uint8_t input[8], uint8_t* __restrict cell)
 {
 	int a, b;
 
@@ -1146,7 +1189,7 @@ static __forceinline void DecompressBlockColor(const uint8_t input[8], uint8_t* 
 
 	if ((c & (1 << 24)) == 0)
 	{
-		int buffer[4][4] alignas(16);
+		alignas(16) int buffer[4][4];
 
 		int qa = (c >> (5 + 24)) & 7;
 		DecompressHalfColor(buffer[0], buffer[1], a, qa, way, 0);
@@ -1755,7 +1798,7 @@ static void SortNodes20Shifted(Node* __restrict nodep)
 
 #undef SWAP_PAIR
 
-static __forceinline void SortNodes10(Node nodes[0x10 + 1], int water)
+static INLINED void SortNodes10(Node nodes[0x10 + 1], int water)
 {
 	int n = nodes[0x10].Color;
 	int w = 0;
@@ -1827,7 +1870,7 @@ static __forceinline void SortNodes10(Node nodes[0x10 + 1], int water)
 	}
 }
 
-static __forceinline void SortNodes20(Node nodes[0x20 + 1], int water)
+static INLINED void SortNodes20(Node nodes[0x20 + 1], int water)
 {
 	int n = nodes[0x20].Color;
 	int w = 0;
@@ -1918,26 +1961,26 @@ static __forceinline void SortNodes20(Node nodes[0x20 + 1], int water)
 }
 
 
-static __forceinline __m128i load_color_BGRA(const uint8_t color[4])
+static INLINED __m128i load_color_BGRA(const uint8_t color[4])
 {
 	__m128i margb = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*(int*)color));
 
 	return _mm_shuffle_epi32(margb, _MM_SHUFFLE(3, 0, 2, 1));
 }
 
-static __forceinline __m128i load_color_GRB(const uint8_t color[4])
+static INLINED __m128i load_color_GRB(const uint8_t color[4])
 {
 	return _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*(int*)color));
 }
 
-static __forceinline __m128i load_color_GR(const uint8_t color[2])
+static INLINED __m128i load_color_GR(const uint8_t color[2])
 {
 	__m128i mrg = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*(uint16_t*)color));
 
 	return _mm_unpacklo_epi64(mrg, mrg);
 }
 
-static __forceinline int ComputeErrorGRB(const Half& half, const uint8_t color[4], int water, int q)
+static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int water, int q)
 {
 	__m128i mc = load_color_GRB(color);
 
@@ -2077,7 +2120,7 @@ static __forceinline int ComputeErrorGRB(const Half& half, const uint8_t color[4
 	return _mm_cvtsi128_si32(sum);
 }
 
-static __forceinline int ComputeErrorGR(const Half& half, const uint8_t color[2], int water, int q)
+static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int water, int q)
 {
 	__m128i mc = load_color_GR(color);
 
@@ -2251,15 +2294,15 @@ struct BlockStateColor
 
 struct GuessStateColor
 {
-	Node node0[0x12] alignas(16), node1[0x12] alignas(16), node2[0x12] alignas(16);
+	alignas(16) Node node0[0x12], node1[0x12], node2[0x12];
 
 	int stop;
 
-	__forceinline GuessStateColor()
+	INLINED GuessStateColor()
 	{
 	}
 
-	__forceinline void Init(const Half& half, int water, int q)
+	INLINED void Init(const Half& half, int water, int q)
 	{
 		GuessLevels(half, 0, node0, kGreen, water, q);
 		stop = node0[0x10].Error;
@@ -2277,7 +2320,7 @@ struct GuessStateColor
 		stop += node2[0x10].Error;
 	}
 
-	__forceinline void Sort(int water)
+	INLINED void Sort(int water)
 	{
 		SortNodes10(node0, water - node1[0x10].Error - node2[0x10].Error);
 		SortNodes10(node1, water - node0[0x10].Error - node2[0x10].Error);
@@ -2296,7 +2339,7 @@ struct AdjustStateColor
 	uint32_t flag0, flag1, flag2;
 	int unused0, unused1, unused2;
 
-	Node node0[0x22] alignas(16), node1[0x22] alignas(16), node2[0x22] alignas(16);
+	alignas(16) Node node0[0x22], node1[0x22], node2[0x22];
 
 	int ErrorsG[0x20];
 	int ErrorsGR[0x20 * 0x20];
@@ -2305,13 +2348,13 @@ struct AdjustStateColor
 
 	int swap0[0x20], swap1[0x20], swap2[0x20];
 
-	Node diff0[0x20][10] alignas(16), diff1[0x20][10] alignas(16), diff2[0x20][10] alignas(16);
+	alignas(16) Node diff0[0x20][10], diff1[0x20][10], diff2[0x20][10];
 
-	__forceinline AdjustStateColor()
+	INLINED AdjustStateColor()
 	{
 	}
 
-	__forceinline void Init(const Half& half, int water, int q)
+	INLINED void Init(const Half& half, int water, int q)
 	{
 		bool f = false;
 		flag_sort = f;
@@ -2335,7 +2378,7 @@ struct AdjustStateColor
 		stop += node2[0x20].Error;
 	}
 
-	__forceinline void Sort(int water)
+	INLINED void Sort(int water)
 	{
 		if (flag_sort)
 			return;
@@ -2346,7 +2389,7 @@ struct AdjustStateColor
 		SortNodes20(node2, water - node0[0x20].Error - node1[0x20].Error);
 	}
 
-	__declspec(noinline) void DoWalk(const Half& half, int water, int q)
+	NOTINLINED void DoWalk(const Half& half, int water, int q)
 	{
 		uint8_t c[4];
 
@@ -2389,7 +2432,7 @@ struct AdjustStateColor
 		stop = min01 + node2[0x20].Error;
 	}
 
-	__forceinline void Walk(const Half& half, int water, int q)
+	INLINED void Walk(const Half& half, int water, int q)
 	{
 		if (flag_error)
 			return;
@@ -2398,7 +2441,7 @@ struct AdjustStateColor
 		DoWalk(half, water, q);
 	}
 
-	__declspec(noinline) void DoBottom(const Half& half, int water, int q)
+	NOTINLINED void DoBottom(const Half& half, int water, int q)
 	{
 		uint8_t c[4];
 
@@ -2456,7 +2499,7 @@ struct AdjustStateColor
 		stop = minimum;
 	}
 
-	__forceinline void Bottom(const Half& half, int water, int q)
+	INLINED void Bottom(const Half& half, int water, int q)
 	{
 		if (flag_minimum)
 			return;
@@ -2465,7 +2508,7 @@ struct AdjustStateColor
 		DoBottom(half, water, q);
 	}
 
-	__forceinline void Index()
+	INLINED void Index()
 	{
 		if (flag_swap)
 			return;
@@ -2503,11 +2546,11 @@ struct AdjustStateColorGroup
 {
 	AdjustStateColor S[8];
 
-	__forceinline AdjustStateColorGroup()
+	INLINED AdjustStateColorGroup()
 	{
 	}
 
-	__forceinline void Init(const Half& half, int water)
+	INLINED void Init(const Half& half, int water)
 	{
 		for (int q = 0; q < 8; q++)
 		{
@@ -2515,7 +2558,7 @@ struct AdjustStateColorGroup
 		}
 	}
 
-	__forceinline int Best(int water) const
+	INLINED int Best(int water) const
 	{
 		int best = water;
 
@@ -2528,7 +2571,7 @@ struct AdjustStateColorGroup
 	}
 };
 
-static __forceinline double ComputeTableColor(const Half& half, const uint8_t color[4], int q, uint32_t& index)
+static INLINED double ComputeTableColor(const Half& half, const uint8_t color[4], int q, uint32_t& index)
 {
 	size_t halfSize = (size_t)(uint32_t)half.Count;
 	if (halfSize == 0)
@@ -2613,11 +2656,11 @@ static __forceinline double ComputeTableColor(const Half& half, const uint8_t co
 			SSIM_UPDATE(mt, mb);
 		}
 
-		SSIM_CLOSE();
+		SSIM_CLOSE(3);
 
-		SSIM_FINAL(mssim_rg);
+		SSIM_FINAL(mssim_rg, g_ssim_8k1L, g_ssim_8k2L);
 		SSIM_OTHER();
-		SSIM_FINAL(mssim_b);
+		SSIM_FINAL(mssim_b, g_ssim_8k1L, g_ssim_8k2L);
 
 		double ssim =
 			_mm_cvtsd_f64(mssim_rg) * kGreen +
@@ -2679,7 +2722,7 @@ static __forceinline double ComputeTableColor(const Half& half, const uint8_t co
 	return best * (1.0 / 1000.0);
 }
 
-static __forceinline int GuessColor4(const Half& half, uint8_t color[4], int water, int& table)
+static INLINED int GuessColor4(const Half& half, uint8_t color[4], int water, int& table)
 {
 	GuessStateColor S;
 
@@ -2762,7 +2805,7 @@ static int CompressBlockColor44(BlockStateColor &s, const Elem& elem, int water,
 	return err;
 }
 
-static __forceinline int DifferentialColors3(int Id, uint32_t& flag, const Node node[0x20], const int swap[0x20], Node diff[8 + 1], int water)
+static INLINED int DifferentialColors3(int Id, uint32_t& flag, const Node node[0x20], const int swap[0x20], Node diff[8 + 1], int water)
 {
 	if ((flag & (1u << Id)) == 0)
 	{
@@ -2831,7 +2874,7 @@ static __forceinline int DifferentialColors3(int Id, uint32_t& flag, const Node 
 	return diff[0].Error;
 }
 
-static __forceinline int AdjustColors53(const Elem& elem, uint8_t color[4], uint8_t other[4], int water, int qa, int qb, AdjustStateColor& SA, AdjustStateColor& SB, int bestA, int bestB)
+static INLINED int AdjustColors53(const Elem& elem, uint8_t color[4], uint8_t other[4], int water, int qa, int qb, AdjustStateColor& SA, AdjustStateColor& SB, int bestA, int bestB)
 {
 	uint8_t a[4], b[4];
 
@@ -3059,7 +3102,7 @@ static int CompressBlockColor53(BlockStateColor &s, const Elem& elem, int water,
 	return water;
 }
 
-static __forceinline int MeasureHalfColor(const int pL[4 * 4], const int pH[4 * 4], const uint8_t color[4], int q, uint32_t dataL, uint32_t dataH, int slice, int shift)
+static INLINED int MeasureHalfColor(const int pL[4 * 4], const int pH[4 * 4], const uint8_t color[4], int q, uint32_t dataL, uint32_t dataH, int slice, int shift)
 {
 	__m128i mc = load_color_GRB(color);
 
@@ -3149,7 +3192,7 @@ static __forceinline int MeasureHalfColor(const int pL[4 * 4], const int pH[4 * 
 	return _mm_cvtsi128_si32(sum);
 }
 
-static __forceinline void FilterPixelsColor(Half& half, uint32_t order)
+static INLINED void FilterPixelsColor(Half& half, uint32_t order)
 {
 	size_t w = 0;
 
@@ -3447,8 +3490,12 @@ public:
 	};
 
 protected:
+#ifdef WIN32
 	CRITICAL_SECTION _Sync;
 	HANDLE _Done;
+#else
+	std::mutex _Sync;
+#endif
 
 	Job* _First;
 	Job* _Last;
@@ -3463,12 +3510,14 @@ protected:
 public:
 	Worker()
 	{
+#ifdef WIN32
 		if (!InitializeCriticalSectionAndSpinCount(&_Sync, 1000))
 			throw std::runtime_error("init");
 
 		_Done = CreateEvent(NULL, FALSE, FALSE, NULL);
 		if (_Done == nullptr)
 			throw std::runtime_error("init");
+#endif
 
 		_First = nullptr;
 		_Last = nullptr;
@@ -3485,20 +3534,30 @@ public:
 
 		_Last = nullptr;
 
+#ifdef WIN32
 		if (_Done != nullptr)
 			CloseHandle(_Done), _Done = nullptr;
 
 		DeleteCriticalSection(&_Sync);
+#endif
 	}
 
 	void Lock()
 	{
+#ifdef WIN32
 		EnterCriticalSection(&_Sync);
+#else
+		_Sync.lock();
+#endif
 	}
 
 	void UnLock()
 	{
+#ifdef WIN32
 		LeaveCriticalSection(&_Sync);
+#else
+		_Sync.unlock();
+#endif
 	}
 
 	void Add(Job* job)
@@ -3530,7 +3589,11 @@ protected:
 		return job;
 	}
 
+#ifdef WIN32
 	static DWORD WINAPI ThreadProc(LPVOID lpParameter)
+#else
+	static int ThreadProc(Worker* lpParameter)
+#endif
 	{
 		Worker* worker = static_cast<Worker*>(lpParameter);
 
@@ -3586,10 +3649,12 @@ protected:
 
 		worker->_Running--;
 
+#ifdef WIN32
 		if (worker->_Running <= 0)
 		{
 			SetEvent(worker->_Done);
 		}
+#endif
 
 		return 0;
 	}
@@ -3607,17 +3672,36 @@ public:
 
 		for (int i = 0; i < n; i++)
 		{
+#ifdef WIN32
 			HANDLE hthread = CreateThread(NULL, WorkerThreadStackSize, ThreadProc, this, 0, NULL);
 			if (hthread == nullptr)
 				throw std::runtime_error("fork");
 			CloseHandle(hthread);
+#else
+			boost::thread::attributes attrs;
+			attrs.set_stack_size(WorkerThreadStackSize);
+			boost::thread thread(attrs, boost::bind(ThreadProc, this));
+			thread.detach();
+#endif
 		}
 
+#ifdef WIN32
 		WaitForSingleObject(_Done, INFINITE);
+#else
+		for (;; )
+		{
+			std::this_thread::yield();
+
+			if (_Running <= 0)
+				break;
+		}
+#endif
 
 		return _mm_unpacklo_epi64(_mm_cvtsi64_si128(_mse), _mm_castpd_si128(_mm_load_sd((double*)&_ssim)));
 	}
 };
+
+#ifdef WIN32
 
 static bool ReadImage(const char* src_name, uint8_t* &pixels, int &width, int &height, bool flip)
 {
@@ -3754,6 +3838,8 @@ static void SaveEtc1(const char* name, const uint8_t* buffer, int size)
 	printf(ok ? "Saved %s\n" : "Lost %s\n", name);
 }
 
+#endif
+
 static __m128i PackTexture(uint8_t* dst_etc1, uint8_t* src_bgra, int src_w, int src_h, PackMode mode)
 {
 	auto start = std::chrono::high_resolution_clock::now();
@@ -3809,7 +3895,7 @@ static __m128i PackTexture(uint8_t* dst_etc1, uint8_t* src_bgra, int src_w, int 
 	return _mm_unpacklo_epi64(_mm_cvtsi64_si128(mse), _mm_castpd_si128(_mm_load_sd(&ssim)));
 }
 
-static __forceinline void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int radius)
+static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int radius)
 {
 	if (radius <= 0)
 		return;
@@ -3885,6 +3971,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 			if (strcmp(arg, "/retina") == 0)
 			{
 				border = 2;
+				continue;
 			}
 			else if (strcmp(arg, "/debug") == 0)
 			{
@@ -3892,13 +3979,15 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 				{
 					result_name = args[i].c_str();
 				}
+				continue;
 			}
+#ifdef WIN32
 			else
 			{
 				printf("Unknown %s\n", arg);
+				continue;
 			}
-
-			continue;
+#endif
 		}
 
 		if (src_name == nullptr)
