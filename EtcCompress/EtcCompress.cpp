@@ -53,7 +53,12 @@ typedef struct alignas(16) { Half A, B; } Elem;
 typedef struct alignas(8) { int Error, Color; } Node;
 
 // http://www.brucelindbloom.com/index.html?WorkingSpaceInfo.html sRGB
-enum { kGreen = 715, kRed = 213, kBlue = 72, kUnknownError = (255 * 255) * 1000 * (4 * 4) + 1 };
+enum { kGreen = 715, kRed = 213, kBlue = 72 };
+
+// Linear RGB
+//enum { kGreen = 1, kRed = 1, kBlue = 1 };
+
+enum { kColor = kGreen + kRed + kBlue, kUnknownError = (255 * 255) * kColor * (4 * 4) + 1 };
 
 alignas(16) static const int g_table[8][2] = { { 2, 8 },{ 5, 17 },{ 9, 29 },{ 13, 42 },{ 18, 60 },{ 24, 80 },{ 33, 106 },{ 47, 183 } };
 
@@ -2075,6 +2080,7 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 			return water;
 	}
 
+	static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
 	if (int_sum < 0x7FFF * kBlue)
 	{
@@ -2250,6 +2256,7 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 			return water;
 	}
 
+	static_assert(kGreen >= kRed, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
 	if (int_sum < 0x7FFF * kRed)
 	{
@@ -2640,7 +2647,7 @@ static INLINED double ComputeTableColor(const Half& half, const uint8_t color[4]
 		loops[i] = k;
 	}
 
-	double best = -1000.1;
+	double best = -(kColor + 0.1);
 	uint32_t codes = 0;
 
 	for (;; )
@@ -2678,7 +2685,7 @@ static INLINED double ComputeTableColor(const Half& half, const uint8_t color[4]
 			}
 			codes = v;
 
-			if (best >= 1000.0)
+			if (best >= kColor)
 				break;
 		}
 
@@ -2719,7 +2726,7 @@ static INLINED double ComputeTableColor(const Half& half, const uint8_t color[4]
 		index |= code << shift;
 	}
 
-	return best * (1.0 / 1000.0);
+	return best * (1.0 / kColor);
 }
 
 static INLINED int GuessColor4(const Half& half, uint8_t color[4], int water, int& table)
@@ -4124,7 +4131,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 		if (mse_color > 0)
 		{
 			printf("Texture RGB wPSNR = %f, wSSIM_4x2 = %.8f\n\n",
-				10.0 * log((255.0 * 255.0) * 1000.0 * (src_texture_h * src_texture_w) / mse_color) / log(10.0),
+				10.0 * log((255.0 * 255.0) * kColor * (src_texture_h * src_texture_w) / mse_color) / log(10.0),
 				ssim_color * 8.0 / (src_texture_h * src_texture_w));
 		}
 		else
