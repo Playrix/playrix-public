@@ -88,9 +88,7 @@ alignas(16) static const short g_tableA[16][8] = {
 
 alignas(16) static const short g_GRB_I16[8] = { kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue, 0 };
 alignas(16) static const short g_GR_I16[8] = { kGreen, kRed, kGreen, kRed, kGreen, kRed, kGreen, kRed };
-
-alignas(16) static const int g_GRB[4] = { kGreen, kRed, kBlue, 0 };
-alignas(16) static const int g_GR[4] = { kGreen, kRed, kGreen, kRed };
+alignas(16) static const short g_GB_I16[8] = { kGreen, kBlue, kGreen, kBlue, kGreen, kBlue, kGreen, kBlue };
 
 alignas(16) static const int g_colors4[0x10] =
 {
@@ -3925,6 +3923,167 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 	return (int)_mm_cvtsi128_si64(sum);
 }
 
+static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, int water)
+{
+	__m128i best = _mm_cvtsi64_si128((size_t)(uint32_t)water);
+
+	__m128i mt10 = _mm_unpacklo_epi64(_mm_shuffle_epi32(mc0, _MM_SHUFFLE(2, 0, 2, 0)), _mm_shuffle_epi32(mc1, _MM_SHUFFLE(2, 0, 2, 0)));
+	__m128i mt32 = _mm_unpacklo_epi64(_mm_shuffle_epi32(mc2, _MM_SHUFFLE(2, 0, 2, 0)), _mm_shuffle_epi32(mc3, _MM_SHUFFLE(2, 0, 2, 0)));
+
+	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
+
+	__m128i mgb = _mm_load_si128((const __m128i*)g_GB_I16);
+
+	__m128i sum = _mm_setzero_si128();
+
+	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+
+	int k = area.Count, i = 0;
+
+	while ((k -= 4) >= 0)
+	{
+		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
+		__m128i my = _mm_load_si128((const __m128i*)&area.Data[i + 4]);
+		__m128i mz = _mm_load_si128((const __m128i*)&area.Data[i + 8]);
+		__m128i mw = _mm_load_si128((const __m128i*)&area.Data[i + 12]);
+
+		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
+		my = _mm_shuffle_epi32(my, _MM_SHUFFLE(2, 0, 2, 0));
+		mz = _mm_shuffle_epi32(mz, _MM_SHUFFLE(2, 0, 2, 0));
+		mw = _mm_shuffle_epi32(mw, _MM_SHUFFLE(2, 0, 2, 0));
+
+		mx = _mm_packus_epi32(mx, mx);
+		my = _mm_packus_epi32(my, my);
+		mz = _mm_packus_epi32(mz, mz);
+		mw = _mm_packus_epi32(mw, mw);
+
+		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
+		__m128i m3210y = _mm_sub_epi16(mt3210, my);
+		__m128i m3210z = _mm_sub_epi16(mt3210, mz);
+		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
+
+		m3210x = _mm_mullo_epi16(m3210x, m3210x);
+		m3210y = _mm_mullo_epi16(m3210y, m3210y);
+		m3210z = _mm_mullo_epi16(m3210z, m3210z);
+		m3210w = _mm_mullo_epi16(m3210w, m3210w);
+
+		m3210x = _mm_min_epu16(m3210x, mlimit);
+		m3210y = _mm_min_epu16(m3210y, mlimit);
+		m3210z = _mm_min_epu16(m3210z, mlimit);
+		m3210w = _mm_min_epu16(m3210w, mlimit);
+
+		m3210x = _mm_madd_epi16(m3210x, mgb);
+		m3210y = _mm_madd_epi16(m3210y, mgb);
+		m3210z = _mm_madd_epi16(m3210z, mgb);
+		m3210w = _mm_madd_epi16(m3210w, mgb);
+
+		__m128i me1x = HorizontalMinimum4(m3210x);
+		__m128i me1y = HorizontalMinimum4(m3210y);
+		__m128i me1z = HorizontalMinimum4(m3210z);
+		__m128i me1w = HorizontalMinimum4(m3210w);
+
+		sum = _mm_add_epi32(sum, me1x);
+		sum = _mm_add_epi32(sum, me1y);
+		sum = _mm_add_epi32(sum, me1z);
+		sum = _mm_add_epi32(sum, me1w);
+
+		i += 16;
+
+		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
+			return water;
+	}
+
+	if (k & 2)
+	{
+		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
+		__m128i my = _mm_load_si128((const __m128i*)&area.Data[i + 4]);
+
+		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
+		my = _mm_shuffle_epi32(my, _MM_SHUFFLE(2, 0, 2, 0));
+
+		mx = _mm_packus_epi32(mx, mx);
+		my = _mm_packus_epi32(my, my);
+
+		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
+		__m128i m3210y = _mm_sub_epi16(mt3210, my);
+
+		m3210x = _mm_mullo_epi16(m3210x, m3210x);
+		m3210y = _mm_mullo_epi16(m3210y, m3210y);
+
+		m3210x = _mm_min_epu16(m3210x, mlimit);
+		m3210y = _mm_min_epu16(m3210y, mlimit);
+
+		m3210x = _mm_madd_epi16(m3210x, mgb);
+		m3210y = _mm_madd_epi16(m3210y, mgb);
+
+		__m128i me1x = HorizontalMinimum4(m3210x);
+		__m128i me1y = HorizontalMinimum4(m3210y);
+
+		sum = _mm_add_epi32(sum, me1x);
+		sum = _mm_add_epi32(sum, me1y);
+
+		i += 8;
+
+		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
+			return water;
+	}
+
+	if (k & 1)
+	{
+		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
+		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
+		mx = _mm_packus_epi32(mx, mx);
+
+		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
+		m3210 = _mm_mullo_epi16(m3210, m3210);
+		m3210 = _mm_min_epu16(m3210, mlimit);
+		m3210 = _mm_madd_epi16(m3210, mgb);
+
+		__m128i me1 = HorizontalMinimum4(m3210);
+
+		sum = _mm_add_epi32(sum, me1);
+
+		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
+			return water;
+	}
+
+	static_assert(kGreen >= kBlue, "Error");
+	int int_sum = _mm_cvtsi128_si32(sum);
+	if (int_sum < 0x7FFF * kBlue)
+	{
+		return int_sum;
+	}
+
+	sum = _mm_setzero_si128();
+
+	mgb = _mm_cvtepi16_epi32(mgb);
+
+	mt10 = _mm_cvtepi16_epi32(mt3210);
+	mt32 = _mm_unpackhi_epi16(mt3210, sum);
+
+	for (k = area.Count, i = 0; --k >= 0; i += 4)
+	{
+		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
+		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
+
+		__m128i m10 = _mm_sub_epi16(mt10, mx);
+		__m128i m32 = _mm_sub_epi16(mt32, mx);
+
+		m10 = _mm_mullo_epi16(m10, m10);
+		m32 = _mm_mullo_epi16(m32, m32);
+
+		m10 = _mm_mullo_epi32(m10, mgb);
+		m32 = _mm_mullo_epi32(m32, mgb);
+
+		__m128i me4 = _mm_hadd_epi32(m10, m32);
+		__m128i me1 = HorizontalMinimum4(me4);
+
+		sum = _mm_add_epi32(sum, me1);
+	}
+
+	return (int)_mm_cvtsi128_si64(sum);
+}
+
 static INLINED void ComputeTableColorFour(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, uint32_t& index)
 {
 	size_t areaSize = (size_t)(uint32_t)area.Count;
@@ -3939,7 +4098,8 @@ static INLINED void ComputeTableColorFour(const Area& area, __m128i mc0, __m128i
 	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc1, mc3)) | 0xF000) == 0xFFFF) good &= ~8;
 	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc2, mc3)) | 0xF000) == 0xFFFF) good &= ~8;
 
-	__m128i mgrb = _mm_load_si128((const __m128i*)g_GRB);
+	__m128i mgrb = _mm_loadl_epi64((const __m128i*)g_GRB_I16);
+	mgrb = _mm_cvtepi16_epi32(mgrb);
 
 	int ways[16];
 
@@ -4075,6 +4235,8 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 
 	alignas(16) Node err0[0x101], err1[0x101], err2[0x101];
 
+	int memGB[0x100];
+
 	for (int q = 0; q < 8; q++)
 	{
 		const auto errors = g_errorsH[q];
@@ -4111,6 +4273,8 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 			int c0 = err0[i0].Color;
 			a[0] = (uint8_t)ExpandColor4(c0 >> 4);
 			b[0] = (uint8_t)ExpandColor4(c0 & 0xF);
+
+			memset(memGB, -1, n2 * sizeof(int));
 
 			for (int i1 = 0; i1 < n1; i1++)
 			{
@@ -4151,6 +4315,24 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 					b[2] = (uint8_t)ExpandColor4(c2 & 0xF);
 
 					if ((a[1] << 16) + (a[0] << 8) + a[2] >= (b[1] << 16) + (b[0] << 8) + b[2])
+						continue;
+
+					int egb = memGB[i2];
+					if (egb < 0)
+					{
+						__m128i md = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)d), 0);
+						__m128i ma = load_color_GRB(a);
+						__m128i mb = load_color_GRB(b);
+
+						__m128i mc0 = _mm_adds_epu8(ma, md);
+						__m128i mc1 = _mm_subs_epu8(ma, md);
+						__m128i mc2 = _mm_adds_epu8(mb, md);
+						__m128i mc3 = _mm_subs_epu8(mb, md);
+
+						egb = ComputeErrorFourGB(area, mc0, mc1, mc2, mc3, water - err1[i1].Error);
+						memGB[i2] = egb;
+					}
+					if (egb + err1[i1].Error >= water)
 						continue;
 
 					int err;
@@ -4261,6 +4443,8 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 
 	alignas(16) Node err0[0x101], err1[0x101], err2[0x101];
 
+	int memGB[0x100];
+
 	for (int q = 0; q < 8; q++)
 	{
 		const auto errors = g_errorsT[q];
@@ -4298,6 +4482,8 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 			a[0] = (uint8_t)ExpandColor4(c0 >> 4);
 			b[0] = (uint8_t)ExpandColor4(c0 & 0xF);
 
+			memset(memGB, -1, n2 * sizeof(int));
+
 			for (int i1 = 0; i1 < n1; i1++)
 			{
 				int e1 = err1[i1].Error + e0;
@@ -4332,6 +4518,24 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 					int c2 = err2[i2].Color;
 					a[2] = (uint8_t)ExpandColor4(c2 >> 4);
 					b[2] = (uint8_t)ExpandColor4(c2 & 0xF);
+
+					int egb = memGB[i2];
+					if (egb < 0)
+					{
+						__m128i md = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)d), 0);
+						__m128i ma = load_color_GRB(a);
+						__m128i mb = load_color_GRB(b);
+
+						__m128i mc0 = ma;
+						__m128i mc1 = _mm_adds_epu8(mb, md);
+						__m128i mc2 = mb;
+						__m128i mc3 = _mm_subs_epu8(mb, md);
+
+						egb = ComputeErrorFourGB(area, mc0, mc1, mc2, mc3, water - err1[i1].Error);
+						memGB[i2] = egb;
+					}
+					if (egb + err1[i1].Error >= water)
+						continue;
 
 					int err;
 					{
