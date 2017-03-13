@@ -3961,7 +3961,7 @@ static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int ra
 
 int EtcMainWithArgs(const std::vector<std::string>& args)
 {
-	bool flip = true;
+	bool flip = false;
 	int border = 1;
 
 	const char* src_name = nullptr;
@@ -4182,7 +4182,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 			}
 		}
 
-		WriteImage(result_name, dst_texture_bgra, src_texture_w, src_texture_h, true);
+		WriteImage(result_name, dst_texture_bgra, src_texture_w, src_texture_h, flip);
 	}
 
 	delete[] dst_texture_bgra;
