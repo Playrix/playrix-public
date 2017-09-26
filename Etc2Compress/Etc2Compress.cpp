@@ -116,6 +116,8 @@ static __m128i g_errorsH[8][0x100][0x100 >> 2];
 static __m128i g_errorsT[8][0x100][0x100 >> 2];
 static __m128i g_errorsA[0x100][0x100][0x100 >> 2];
 
+static int g_stripesA[0x100][0x10][0x100];
+
 static const double g_ssim_8k1L = (0.01 * 255 * 8) * (0.01 * 255 * 8);
 static const double g_ssim_8k2L = g_ssim_8k1L * 9;
 
@@ -275,6 +277,26 @@ static void InitLevelErrors()
 				__m128i mmin = _mm_minpos_epu16(m);
 
 				((int*)g_errorsA[alpha][x])[q] = (int)_mm_cvtsi128_si64(mmin) & 0xFFFF;
+			}
+		}
+	}
+
+	for (size_t alpha = 0; alpha < 0x100; alpha++)
+	{
+		for (size_t x = 0; x < 0x100; x++)
+		{
+			auto errors = (const int*)g_errorsA[alpha][x] + 0x10;
+
+			for (size_t scale = 1; scale < 0x10; scale++)
+			{
+				int v = *errors++;
+
+				for (int i = 1; i < 0x10; i++)
+				{
+					v = Min(v, *errors++);
+				}
+
+				g_stripesA[alpha][scale][x] = v;
 			}
 		}
 	}
@@ -632,7 +654,7 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 #undef STORE_QUAD
 }
 
-static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], int water, int& last_q_way)
+static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], const int* stripes, int water, int& last_q_way)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
@@ -648,6 +670,47 @@ static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], int
 	for (int q = 0x10 << 16; !(q & (0x100 << 16)); q += 0x10 << 16)
 	{
 		errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
+		stripes += 0x100;
+
+		int estimate = stripes[(size_t)(uint32_t)area.Data[0]];
+		if (estimate >= water)
+			continue;
+		estimate += stripes[(size_t)(uint32_t)area.Data[4]];
+		if (estimate >= water)
+			continue;
+		estimate += stripes[(size_t)(uint32_t)area.Data[8]];
+		if (estimate >= water)
+			continue;
+		estimate += stripes[(size_t)(uint32_t)area.Data[12]];
+		if (estimate >= water)
+			continue;
+
+		estimate += stripes[(size_t)(uint32_t)area.Data[16]];
+		estimate += stripes[(size_t)(uint32_t)area.Data[20]];
+		if (estimate >= water)
+			continue;
+		estimate += stripes[(size_t)(uint32_t)area.Data[24]];
+		estimate += stripes[(size_t)(uint32_t)area.Data[28]];
+		if (estimate >= water)
+			continue;
+
+		estimate += stripes[(size_t)(uint32_t)area.Data[32]];
+		estimate += stripes[(size_t)(uint32_t)area.Data[36]];
+		if (estimate >= water)
+			continue;
+		estimate += stripes[(size_t)(uint32_t)area.Data[40]];
+		estimate += stripes[(size_t)(uint32_t)area.Data[44]];
+		if (estimate >= water)
+			continue;
+
+		estimate += stripes[(size_t)(uint32_t)area.Data[48]];
+		estimate += stripes[(size_t)(uint32_t)area.Data[52]];
+		if (estimate >= water)
+			continue;
+		estimate += stripes[(size_t)(uint32_t)area.Data[56]];
+		estimate += stripes[(size_t)(uint32_t)area.Data[60]];
+		if (estimate >= water)
+			continue;
 
 		__m128i sum0 = _mm_setzero_si128();
 		__m128i sum1 = _mm_setzero_si128();
@@ -700,9 +763,11 @@ static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], int
 		__m128i m10 = _mm_packs_epi16(_mm_cmpeq_epi32(sum0, best), _mm_cmpeq_epi32(sum1, best));
 		__m128i m32 = _mm_packs_epi16(_mm_cmpeq_epi32(sum2, best), _mm_cmpeq_epi32(sum3, best));
 		last_q_way = _mm_movemask_epi8(_mm_packs_epi16(m10, m32)) + q;
+
+		water = _mm_cvtsi128_si32(best);
 	}
 
-	return (int)_mm_cvtsi128_si64(best);
+	return water;
 
 #undef PROCESS_PIXEL
 }
@@ -1057,7 +1122,7 @@ static int CompressBlockAlphaEnhanced(uint8_t output[8], const uint8_t* __restri
 		int last_a = alpha_order[alpha_index];
 		int last_q_way = 0;
 
-		int err = AlphaLevels(area, g_errorsA[last_a], water, last_q_way);
+		int err = AlphaLevels(area, g_errorsA[last_a], g_stripesA[last_a][0], water, last_q_way);
 
 		if (water > err)
 		{
