@@ -4267,7 +4267,7 @@ struct Block
 			loops[i] = k;
 		}
 
-		double best = -2000.1;
+		double best = -(kAlpha + kColor + 0.1);
 
 		for (;; )
 		{

@@ -4256,8 +4256,17 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 		if (min0 + min1 + min2 >= water)
 			continue;
 
-		int n0 = Sort100(err0, water);
-		int n1 = Sort100(err1, water - min0);
+		for (int i1 = 0, n1 = err1[0x100].Color; i1 < n1; i1++)
+		{
+			int c1 = err1[i1].Color;
+			if ((c1 >> 4) >(c1 & 0xF)) // if ((a[1] << 16) > (b[1] << 16))
+			{
+				err1[i1].Error = water;
+			}
+		}
+
+		int n0 = Sort100(err0, water - min1 - min2);
+		int n1 = Sort100(err1, water - min0 - min2);
 		int n2 = Sort100(err2, water - min0 - min1);
 
 		int d = g_tableHT[q];
@@ -4286,7 +4295,8 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 				a[1] = (uint8_t)ExpandColor4(c1 >> 4);
 				b[1] = (uint8_t)ExpandColor4(c1 & 0xF);
 
-				if ((a[1] << 8) + a[0] > (b[1] << 8) + b[0])
+				int compare_a1a0_b1b0 = ((a[1] - b[1]) << 16) + ((a[0] - b[0]) << 8);
+				if (compare_a1a0_b1b0 > 0) // if ((a[1] << 16) + (a[0] << 8) > (b[1] << 16) + (b[0] << 8))
 					continue;
 
 				{
@@ -4314,7 +4324,7 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 					a[2] = (uint8_t)ExpandColor4(c2 >> 4);
 					b[2] = (uint8_t)ExpandColor4(c2 & 0xF);
 
-					if ((a[1] << 16) + (a[0] << 8) + a[2] >= (b[1] << 16) + (b[0] << 8) + b[2])
+					if (compare_a1a0_b1b0 >= b[2] - a[2]) // if ((a[1] << 16) + (a[0] << 8) + a[2] >= (b[1] << 16) + (b[0] << 8) + b[2])
 						continue;
 
 					int egb = memGB[i2];
@@ -4464,8 +4474,8 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 		if (min0 + min1 + min2 >= water)
 			continue;
 
-		int n0 = Sort100(err0, water);
-		int n1 = Sort100(err1, water - min0);
+		int n0 = Sort100(err0, water - min1 - min2);
+		int n1 = Sort100(err1, water - min0 - min2);
 		int n2 = Sort100(err2, water - min0 - min1);
 
 		int d = g_tableHT[q];
