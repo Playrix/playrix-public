@@ -116,7 +116,9 @@ static __m128i g_errorsH[8][0x100][0x100 >> 2];
 static __m128i g_errorsT[8][0x100][0x100 >> 2];
 static __m128i g_errorsA[0x100][0x100][0x100 >> 2];
 
-static int g_stripesA[0x100][0x10][0x100];
+static __m128i g_stripesH[8][0x100][0x10 >> 2];
+static __m128i g_stripesT[8][0x100][0x10 >> 2];
+static __m128i g_stripesA[0x100][0x100][0x10 >> 2];
 
 static const double g_ssim_8k1L = (0.01 * 255 * 8) * (0.01 * 255 * 8);
 static const double g_ssim_8k2L = g_ssim_8k1L * 9;
@@ -225,7 +227,7 @@ static void InitLevelErrors()
 			{
 				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
 
-				((int*)&g_errors4[q][x][0])[i] = v * v;
+				((int*)g_errors4[q][x])[i] = v * v;
 			}
 		}
 
@@ -242,7 +244,7 @@ static void InitLevelErrors()
 			{
 				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
 
-				((int*)&g_errors5[q][x][0])[i] = v * v;
+				((int*)g_errors5[q][x])[i] = v * v;
 			}
 		}
 	}
@@ -296,7 +298,7 @@ static void InitLevelErrors()
 					v = Min(v, *errors++);
 				}
 
-				g_stripesA[alpha][scale][x] = v;
+				((int*)g_stripesA[alpha][x])[scale] = v;
 			}
 		}
 	}
@@ -307,8 +309,11 @@ static void InitLevelErrors()
 
 		for (int i = 0; i < 0x100; i++)
 		{
-			int ca = ExpandColor4(i >> 4);
-			int cb = g_colors4[i & 0xF];
+			int a = ((i >> 4) & 0xC) + ((i >> 2) & 3);
+			int b = ((i >> 2) & 0xC) + (i & 3);
+
+			int ca = ExpandColor4(a);
+			int cb = ExpandColor4(b);
 
 			int t0 = Min(ca + d, 255);
 			int t1 = Max(ca - d, 0);
@@ -325,8 +330,11 @@ static void InitLevelErrors()
 
 		for (int i = 0; i < 0x100; i++)
 		{
-			int ca = ExpandColor4(i >> 4);
-			int cb = g_colors4[i & 0xF];
+			int a = ((i >> 4) & 0xC) + ((i >> 2) & 3);
+			int b = ((i >> 2) & 0xC) + (i & 3);
+
+			int ca = ExpandColor4(a);
+			int cb = ExpandColor4(b);
 
 			int t0 = ca;
 			int t1 = Min(cb + d, 255);
@@ -338,6 +346,43 @@ static void InitLevelErrors()
 				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
 
 				((int*)g_errorsT[q][x])[i] = v * v;
+			}
+		}
+	}
+
+	for (int q = 0; q < 8; q++)
+	{
+		for (int x = 0; x < 0x100; x++)
+		{
+			auto errors = (const int*)g_errorsH[q][x];
+
+			for (size_t z = 0; z < 0x10; z++)
+			{
+				int v = *errors++;
+
+				for (int i = 1; i < 0x10; i++)
+				{
+					v = Min(v, *errors++);
+				}
+
+				((int*)g_stripesH[q][x])[z] = v;
+			}
+		}
+
+		for (int x = 0; x < 0x100; x++)
+		{
+			auto errors = (const int*)g_errorsT[q][x];
+
+			for (size_t z = 0; z < 0x10; z++)
+			{
+				int v = *errors++;
+
+				for (int i = 1; i < 0x10; i++)
+				{
+					v = Min(v, *errors++);
+				}
+
+				((int*)g_stripesT[q][x])[z] = v;
 			}
 		}
 	}
@@ -531,7 +576,98 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 #undef STORE_QUAD
 }
 
-static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x100 + 1], const __m128i(*errors)[64], int weight, int water)
+static INLINED void CombineStripes(const Area& area, size_t offset, int chunks[0x10], const __m128i(*stripes)[4], int weight)
+{
+#define PROCESS_PIXEL(index) \
+	{ \
+		const __m128i* p = stripes[(size_t)(uint32_t)area.Data[j + index]]; \
+		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
+		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
+		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
+		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+	} \
+
+#define STORE_QUAD(index) \
+	_mm_store_si128((__m128i*)&chunks[index << 2], _mm_mullo_epi32(sum##index, mweight)); \
+
+	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
+
+	__m128i sum0 = _mm_setzero_si128();
+	__m128i sum1 = _mm_setzero_si128();
+	__m128i sum2 = _mm_setzero_si128();
+	__m128i sum3 = _mm_setzero_si128();
+
+	int k = area.Count; size_t j = offset;
+	if (k & 16)
+	{
+		PROCESS_PIXEL(0);
+		PROCESS_PIXEL(4);
+		PROCESS_PIXEL(8);
+		PROCESS_PIXEL(12);
+		PROCESS_PIXEL(16);
+		PROCESS_PIXEL(20);
+		PROCESS_PIXEL(24);
+		PROCESS_PIXEL(28);
+
+		PROCESS_PIXEL(32);
+		PROCESS_PIXEL(36);
+		PROCESS_PIXEL(40);
+		PROCESS_PIXEL(44);
+		PROCESS_PIXEL(48);
+		PROCESS_PIXEL(52);
+		PROCESS_PIXEL(56);
+		PROCESS_PIXEL(60);
+	}
+	else
+	{
+		if (k & 8)
+		{
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
+
+			j += 32;
+		}
+
+		if (k & 4)
+		{
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
+
+			j += 16;
+		}
+
+		if (k & 2)
+		{
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+
+			j += 8;
+		}
+
+		if (k & 1)
+		{
+			PROCESS_PIXEL(0);
+		}
+	}
+
+	STORE_QUAD(0);
+	STORE_QUAD(1);
+	STORE_QUAD(2);
+	STORE_QUAD(3);
+
+#undef PROCESS_PIXEL
+#undef STORE_QUAD
+}
+
+static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x100 + 1], const __m128i(*errors)[64], const int chunks[0x10], int weight, int water)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
@@ -554,18 +690,23 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
 		w += 4; \
 	} \
-	colors += 0x04040404; \
+	colors += 0x10101010; \
 
 	int top = (water + weight - 1) / weight;
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)top), 0);
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
 
-	size_t colors = 0x03020100;
 	size_t w = 0;
 
 	for (int z = 0; z < 0x10; z++)
 	{
+		if (chunks[z] >= water)
+		{
+			errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
+			continue;
+		}
+
 		__m128i sum0 = _mm_setzero_si128();
 		__m128i sum1 = _mm_setzero_si128();
 		__m128i sum2 = _mm_setzero_si128();
@@ -585,7 +726,6 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 
 			if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
 			{
-				colors += 0x04040404 * 4;
 				errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
 				continue;
 			}
@@ -639,6 +779,8 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 			}
 		}
 
+		size_t colors = (uint32_t)((((z << 4) & 0xC0) + ((z << 2) & 0xC)) * 0x01010101 + 0x03020100);
+
 		STORE_QUAD(0);
 		STORE_QUAD(1);
 		STORE_QUAD(2);
@@ -654,7 +796,53 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 #undef STORE_QUAD
 }
 
-static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], const int* stripes, int water, int& last_q_way)
+static INLINED void AlphaStripes(const Area& area, int chunks[0x10], const __m128i(*stripes)[4])
+{
+#define PROCESS_PIXEL(index) \
+	{ \
+		const __m128i* p = stripes[(size_t)(uint32_t)area.Data[index]]; \
+		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
+		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
+		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
+		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+	} \
+
+#define STORE_QUAD(index) \
+	_mm_store_si128((__m128i*)&chunks[index << 2], sum##index); \
+
+	__m128i sum0 = _mm_setzero_si128();
+	__m128i sum1 = _mm_setzero_si128();
+	__m128i sum2 = _mm_setzero_si128();
+	__m128i sum3 = _mm_setzero_si128();
+
+	PROCESS_PIXEL(0);
+	PROCESS_PIXEL(4);
+	PROCESS_PIXEL(8);
+	PROCESS_PIXEL(12);
+	PROCESS_PIXEL(16);
+	PROCESS_PIXEL(20);
+	PROCESS_PIXEL(24);
+	PROCESS_PIXEL(28);
+
+	PROCESS_PIXEL(32);
+	PROCESS_PIXEL(36);
+	PROCESS_PIXEL(40);
+	PROCESS_PIXEL(44);
+	PROCESS_PIXEL(48);
+	PROCESS_PIXEL(52);
+	PROCESS_PIXEL(56);
+	PROCESS_PIXEL(60);
+
+	STORE_QUAD(0);
+	STORE_QUAD(1);
+	STORE_QUAD(2);
+	STORE_QUAD(3);
+
+#undef PROCESS_PIXEL
+#undef STORE_QUAD
+}
+
+static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], const int chunks[0x10], int water, int& last_q_way)
 {
 #define PROCESS_PIXEL(index) \
 	{ \
@@ -670,46 +858,8 @@ static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], con
 	for (int q = 0x10 << 16; !(q & (0x100 << 16)); q += 0x10 << 16)
 	{
 		errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
-		stripes += 0x100;
 
-		int estimate = stripes[(size_t)(uint32_t)area.Data[0]];
-		if (estimate >= water)
-			continue;
-		estimate += stripes[(size_t)(uint32_t)area.Data[4]];
-		if (estimate >= water)
-			continue;
-		estimate += stripes[(size_t)(uint32_t)area.Data[8]];
-		if (estimate >= water)
-			continue;
-		estimate += stripes[(size_t)(uint32_t)area.Data[12]];
-		if (estimate >= water)
-			continue;
-
-		estimate += stripes[(size_t)(uint32_t)area.Data[16]];
-		estimate += stripes[(size_t)(uint32_t)area.Data[20]];
-		if (estimate >= water)
-			continue;
-		estimate += stripes[(size_t)(uint32_t)area.Data[24]];
-		estimate += stripes[(size_t)(uint32_t)area.Data[28]];
-		if (estimate >= water)
-			continue;
-
-		estimate += stripes[(size_t)(uint32_t)area.Data[32]];
-		estimate += stripes[(size_t)(uint32_t)area.Data[36]];
-		if (estimate >= water)
-			continue;
-		estimate += stripes[(size_t)(uint32_t)area.Data[40]];
-		estimate += stripes[(size_t)(uint32_t)area.Data[44]];
-		if (estimate >= water)
-			continue;
-
-		estimate += stripes[(size_t)(uint32_t)area.Data[48]];
-		estimate += stripes[(size_t)(uint32_t)area.Data[52]];
-		if (estimate >= water)
-			continue;
-		estimate += stripes[(size_t)(uint32_t)area.Data[56]];
-		estimate += stripes[(size_t)(uint32_t)area.Data[60]];
-		if (estimate >= water)
+		if (chunks[q >> (16 + 4)] >= water)
 			continue;
 
 		__m128i sum0 = _mm_setzero_si128();
@@ -765,6 +915,8 @@ static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], con
 		last_q_way = _mm_movemask_epi8(_mm_packs_epi16(m10, m32)) + q;
 
 		water = _mm_cvtsi128_si32(best);
+		if (water <= 0)
+			break;
 	}
 
 	return water;
@@ -1084,45 +1236,28 @@ static int CompressBlockAlphaEnhanced(uint8_t output[8], const uint8_t* __restri
 		area.Data[60] = src[15];
 	}
 
-	int alpha_order[0x100];
+	int sum_alpha = 0;
+	for (int i = 0; i < 16 * 4; i += 4)
 	{
-		int sum_alpha = 0;
-		for (int i = 0; i < 16 * 4; i += 4)
-		{
-			sum_alpha += area.Data[i];
-		}
-		int avg_alpha = (sum_alpha + 8) >> 4;
-
-		int w = 0;
-		alpha_order[w++] = avg_alpha;
-
-		int bottom = avg_alpha - 1;
-		int top = avg_alpha + 1;
-		while ((bottom >= 0) || (top <= 0xFF))
-		{
-			if (bottom >= 0)
-			{
-				alpha_order[w++] = bottom--;
-			}
-
-			if (top <= 0xFF)
-			{
-				alpha_order[w++] = top++;
-			}
-		}
+		sum_alpha += area.Data[i];
 	}
+	int avg_alpha = (sum_alpha + 8) >> 4;
+
+	alignas(16) int chunks[0x10];
 
 	int water = input_error;
 
 	int best_a = output[0];
 	int best_q = output[1];
 
-	for (int alpha_index = 0; alpha_index < 0x100; alpha_index++)
+	int delta = 0;
+	for (;;)
 	{
-		int last_a = alpha_order[alpha_index];
+		int last_a = avg_alpha + delta;
 		int last_q_way = 0;
 
-		int err = AlphaLevels(area, g_errorsA[last_a], g_stripesA[last_a][0], water, last_q_way);
+		AlphaStripes(area, chunks, g_stripesA[last_a]);
+		int err = AlphaLevels(area, g_errorsA[last_a], chunks, water, last_q_way);
 
 		if (water > err)
 		{
@@ -1141,6 +1276,14 @@ static int CompressBlockAlphaEnhanced(uint8_t output[8], const uint8_t* __restri
 			}
 
 			if (water <= 0)
+				break;
+		}
+
+		delta = (int)(~(uint32_t)delta) + ((delta < 0) ? 1 : 0);
+		if (((avg_alpha + delta) & ~0xFF) != 0)
+		{
+			delta = (int)(~(uint32_t)delta) + ((delta < 0) ? 1 : 0);
+			if (((avg_alpha + delta) & ~0xFF) != 0)
 				break;
 		}
 	}
@@ -4298,25 +4441,30 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 	uint8_t best_a[4], best_b[4];
 	int best_q = 0;
 
+	alignas(16) int chunks0[0x10], chunks1[0x10], chunks2[0x10];
 	alignas(16) Node err0[0x101], err1[0x101], err2[0x101];
 
 	int memGB[0x100];
 
 	for (int q = 0; q < 8; q++)
 	{
+		const auto stripes = g_stripesH[q];
 		const auto errors = g_errorsH[q];
 
-		CombineLevels(area, 0, err0, errors, kGreen, water);
+		CombineStripes(area, 0, chunks0, stripes, kGreen);
+		CombineLevels(area, 0, err0, errors, chunks0, kGreen, water);
 		int min0 = err0[0x100].Error;
 		if (min0 >= water)
 			continue;
 
-		CombineLevels(area, 1, err1, errors, kRed, water - min0);
+		CombineStripes(area, 1, chunks1, stripes, kRed);
+		CombineLevels(area, 1, err1, errors, chunks1, kRed, water - min0);
 		int min1 = err1[0x100].Error;
 		if (min0 + min1 >= water)
 			continue;
 
-		CombineLevels(area, 2, err2, errors, kBlue, water - min0 - min1);
+		CombineStripes(area, 2, chunks2, stripes, kBlue);
+		CombineLevels(area, 2, err2, errors, chunks2, kBlue, water - min0 - min1);
 		int min2 = err2[0x100].Error;
 		if (min0 + min1 + min2 >= water)
 			continue;
@@ -4324,7 +4472,7 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 		for (int i1 = 0, n1 = err1[0x100].Color; i1 < n1; i1++)
 		{
 			int c1 = err1[i1].Color;
-			if ((c1 >> 4) >(c1 & 0xF)) // if ((a[1] << 16) > (b[1] << 16))
+			if ((c1 >> 4) > (c1 & 0xF)) // if ((a[1] << 16) > (b[1] << 16))
 			{
 				err1[i1].Error = water;
 			}
@@ -4516,25 +4664,30 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 	uint8_t best_a[4], best_b[4];
 	int best_q = 0;
 
+	alignas(16) int chunks0[0x10], chunks1[0x10], chunks2[0x10];
 	alignas(16) Node err0[0x101], err1[0x101], err2[0x101];
 
 	int memGB[0x100];
 
 	for (int q = 0; q < 8; q++)
 	{
+		const auto stripes = g_stripesT[q];
 		const auto errors = g_errorsT[q];
 
-		CombineLevels(area, 0, err0, errors, kGreen, water);
+		CombineStripes(area, 0, chunks0, stripes, kGreen);
+		CombineLevels(area, 0, err0, errors, chunks0, kGreen, water);
 		int min0 = err0[0x100].Error;
 		if (min0 >= water)
 			continue;
 
-		CombineLevels(area, 1, err1, errors, kRed, water - min0);
+		CombineStripes(area, 1, chunks1, stripes, kRed);
+		CombineLevels(area, 1, err1, errors, chunks1, kRed, water - min0);
 		int min1 = err1[0x100].Error;
 		if (min0 + min1 >= water)
 			continue;
 
-		CombineLevels(area, 2, err2, errors, kBlue, water - min0 - min1);
+		CombineStripes(area, 2, chunks2, stripes, kBlue);
+		CombineLevels(area, 2, err2, errors, chunks2, kBlue, water - min0 - min1);
 		int min2 = err2[0x100].Error;
 		if (min0 + min1 + min2 >= water)
 			continue;
@@ -4784,6 +4937,86 @@ static INLINED void PlanarCollect(const Area& area, size_t offset, Surface& surf
 	}
 }
 
+static INLINED int PlanarStripeOH(const Surface& surface, int co, int chL, int chH)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
+
+	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+	__m128i mmin0 = _mm_mullo_epi16(mmin, my0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, my1);
+
+	__m128i mmax0 = _mm_mullo_epi16(mmax, my0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, my1);
+
+	mmin0 = _mm_add_epi16(mmin0, mo0);
+	mmin1 = _mm_add_epi16(mmin1, mo1);
+
+	mmax0 = _mm_add_epi16(mmax0, mo0);
+	mmax1 = _mm_add_epi16(mmax1, mo1);
+
+	//
+
+	__m128i mhL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chL - co), 0), 0);
+	__m128i mhH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chH - co), 0), 0);
+
+	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mt0L = _mm_mullo_epi16(mhL, mx0);
+	__m128i mt1L = _mm_mullo_epi16(mhL, mx1);
+
+	mmin0 = _mm_add_epi16(mmin0, mt0L);
+	mmin1 = _mm_add_epi16(mmin1, mt1L);
+
+	__m128i mt0H = _mm_mullo_epi16(mhH, mx0);
+	__m128i mt1H = _mm_mullo_epi16(mhH, mx1);
+
+	mmax0 = _mm_add_epi16(mmax0, mt0H);
+	mmax1 = _mm_add_epi16(mmax1, mt1H);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	mmin0 = _mm_packus_epi16(mmin0, mmin1);
+	mmax0 = _mm_packus_epi16(mmax0, mmax1);
+
+	__m128i mzero = _mm_setzero_si128();
+
+	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
+	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
+	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
+	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
+
+	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
+	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
+
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
 static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
 {
 	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
@@ -4827,6 +5060,86 @@ static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
 
 	mmax0 = _mm_add_epi16(mmax0, mt0);
 	mmax1 = _mm_add_epi16(mmax1, mt1);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	mmin0 = _mm_packus_epi16(mmin0, mmin1);
+	mmax0 = _mm_packus_epi16(mmax0, mmax1);
+
+	__m128i mzero = _mm_setzero_si128();
+
+	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
+	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
+	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
+	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
+
+	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
+	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
+
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
+static INLINED int PlanarStripeOV(const Surface& surface, int co, int cvL, int cvH)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
+
+	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mmin0 = _mm_mullo_epi16(mmin, mx0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, mx1);
+
+	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
+
+	mmin0 = _mm_add_epi16(mmin0, mo0);
+	mmin1 = _mm_add_epi16(mmin1, mo1);
+
+	mmax0 = _mm_add_epi16(mmax0, mo0);
+	mmax1 = _mm_add_epi16(mmax1, mo1);
+
+	//
+
+	__m128i mvL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvL - co), 0), 0);
+	__m128i mvH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvH - co), 0), 0);
+
+	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+	__m128i mt0L = _mm_mullo_epi16(mvL, my0);
+	__m128i mt1L = _mm_mullo_epi16(mvL, my1);
+
+	mmin0 = _mm_add_epi16(mmin0, mt0L);
+	mmin1 = _mm_add_epi16(mmin1, mt1L);
+
+	__m128i mt0H = _mm_mullo_epi16(mvH, my0);
+	__m128i mt1H = _mm_mullo_epi16(mvH, my1);
+
+	mmax0 = _mm_add_epi16(mmax0, mt0H);
+	mmax1 = _mm_add_epi16(mmax1, mt1H);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -4936,6 +5249,86 @@ static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
 	return _mm_cvtsi128_si32(e);
 }
 
+static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH, int cvL, int cvH)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chL - co), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chH - co), 0), 0);
+
+	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mmin0 = _mm_mullo_epi16(mmin, mx0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, mx1);
+
+	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
+
+	mmin0 = _mm_add_epi16(mmin0, mo0);
+	mmin1 = _mm_add_epi16(mmin1, mo1);
+
+	mmax0 = _mm_add_epi16(mmax0, mo0);
+	mmax1 = _mm_add_epi16(mmax1, mo1);
+
+	//
+
+	__m128i mvL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvL - co), 0), 0);
+	__m128i mvH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvH - co), 0), 0);
+
+	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+	__m128i mt0L = _mm_mullo_epi16(mvL, my0);
+	__m128i mt1L = _mm_mullo_epi16(mvL, my1);
+
+	mmin0 = _mm_add_epi16(mmin0, mt0L);
+	mmin1 = _mm_add_epi16(mmin1, mt1L);
+
+	__m128i mt0H = _mm_mullo_epi16(mvH, my0);
+	__m128i mt1H = _mm_mullo_epi16(mvH, my1);
+
+	mmax0 = _mm_add_epi16(mmax0, mt0H);
+	mmax1 = _mm_add_epi16(mmax1, mt1H);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	mmin0 = _mm_packus_epi16(mmin0, mmin1);
+	mmax0 = _mm_packus_epi16(mmax0, mmax1);
+
+	__m128i mzero = _mm_setzero_si128();
+
+	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
+	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
+	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
+	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
+
+	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
+	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
+
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
 static INLINED int PlanarPyramid(const Surface& surface, int co, int ch, int cv)
 {
 	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
@@ -5004,6 +5397,8 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 
 	alignas(16) Node nodesO[0x81], nodesH[0x81], nodesV[0x81];
 
+	alignas(16) int chunks[0x10 * 0x10];
+
 	PlanarCollectO(area, offset, surface);
 
 	{
@@ -5043,16 +5438,34 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 		{
 			size_t w = 0;
 
-			for (int i = 0; i < 0x80; i++)
+			for (int i = 0; i < 0x80; i += 0x20)
 			{
 				int ch = (i << 1) + (i >> 6);
 
-				int err = PlanarPyramidOH(surface, co, ch);
-				if (err < best)
+				int stripe32 = PlanarStripeOH(surface, co, ch, ch + (31 << 1));
+				if (stripe32 < best)
 				{
-					nodesH[w].Error = err;
-					nodesH[w].Color = ch;
-					w++;
+					for (int j = 8; --j >= 0;)
+					{
+						int stripe4 = PlanarStripeOH(surface, co, ch, ch + (3 << 1));
+						if (stripe4 < best)
+						{
+							for (int k = 4; --k >= 0; ch += (1 << 1))
+							{
+								int err = PlanarPyramidOH(surface, co, ch);
+								if (err < best)
+								{
+									nodesH[w].Error = err;
+									nodesH[w].Color = ch;
+									w++;
+								}
+							}
+						}
+						else
+						{
+							ch += (4 << 1);
+						}
+					}
 				}
 			}
 
@@ -5065,16 +5478,34 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 		{
 			size_t w = 0;
 
-			for (int i = 0; i < 0x80; i++)
+			for (int i = 0; i < 0x80; i += 0x20)
 			{
 				int cv = (i << 1) + (i >> 6);
 
-				int err = PlanarPyramidOV(surface, co, cv);
-				if (err < best)
+				int stripe32 = PlanarStripeOV(surface, co, cv, cv + (31 << 1));
+				if (stripe32 < best)
 				{
-					nodesV[w].Error = err;
-					nodesV[w].Color = cv;
-					w++;
+					for (int j = 8; --j >= 0;)
+					{
+						int stripe4 = PlanarStripeOV(surface, co, cv, cv + (3 << 1));
+						if (stripe4 < best)
+						{
+							for (int k = 4; --k >= 0; cv += (1 << 1))
+							{
+								int err = PlanarPyramidOV(surface, co, cv);
+								if (err < best)
+								{
+									nodesV[w].Error = err;
+									nodesV[w].Color = cv;
+									w++;
+								}
+							}
+						}
+						else
+						{
+							cv += (4 << 1);
+						}
+					}
 				}
 			}
 
@@ -5083,6 +5514,8 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 
 			nodesV[0x80].Color = (int)w;
 		}
+
+		memset(chunks, -1, sizeof(chunks));
 
 		for (int ih = 0, nh = nodesH[0x80].Color; ih < nh; ih++)
 		{
@@ -5099,6 +5532,22 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 					continue;
 
 				int cv = nodesV[iv].Color;
+
+				{
+					size_t index = (uint32_t)(ch & 0xF0) + (uint32_t)(cv >> 4);
+
+					int estimate = chunks[index];
+					if (estimate < 0)
+					{
+						int ch0 = ch & 0xF1;
+						int cv0 = cv & 0xF1;
+
+						estimate = PlanarStripe(surface, co, ch0, ch0 + (7 << 1), cv0, cv0 + (7 << 1));
+						chunks[index] = estimate;
+					}
+					if (estimate >= best)
+						continue;
+				}
 
 				int sum = PlanarPyramid(surface, co, ch, cv);
 				if (best > sum)
@@ -5123,6 +5572,8 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 	Surface surface;
 
 	alignas(16) Node nodesO[0x41], nodesH[0x41], nodesV[0x41];
+
+	alignas(16) int chunks[0x10 * 0x10];
 
 	PlanarCollectO(area, offset, surface);
 
@@ -5163,16 +5614,34 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 		{
 			size_t w = 0;
 
-			for (int i = 0; i < 0x40; i++)
+			for (int i = 0; i < 0x40; i += 0x10)
 			{
 				int ch = (i << 2) + (i >> 4);
 
-				int err = PlanarPyramidOH(surface, co, ch);
-				if (err < best)
+				int stripe16 = PlanarStripeOH(surface, co, ch, ch + (15 << 2));
+				if (stripe16 < best)
 				{
-					nodesH[w].Error = err;
-					nodesH[w].Color = ch;
-					w++;
+					for (int j = 4; --j >= 0;)
+					{
+						int stripe4 = PlanarStripeOH(surface, co, ch, ch + (3 << 2));
+						if (stripe4 < best)
+						{
+							for (int k = 4; --k >= 0; ch += (1 << 2))
+							{
+								int err = PlanarPyramidOH(surface, co, ch);
+								if (err < best)
+								{
+									nodesH[w].Error = err;
+									nodesH[w].Color = ch;
+									w++;
+								}
+							}
+						}
+						else
+						{
+							ch += (4 << 2);
+						}
+					}
 				}
 			}
 
@@ -5185,16 +5654,34 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 		{
 			size_t w = 0;
 
-			for (int i = 0; i < 0x40; i++)
+			for (int i = 0; i < 0x40; i += 0x10)
 			{
 				int cv = (i << 2) + (i >> 4);
 
-				int err = PlanarPyramidOV(surface, co, cv);
-				if (err < best)
+				int stripe16 = PlanarStripeOV(surface, co, cv, cv + (15 << 2));
+				if (stripe16 < best)
 				{
-					nodesV[w].Error = err;
-					nodesV[w].Color = cv;
-					w++;
+					for (int j = 4; --j >= 0;)
+					{
+						int stripe4 = PlanarStripeOV(surface, co, cv, cv + (3 << 2));
+						if (stripe4 < best)
+						{
+							for (int k = 4; --k >= 0; cv += (1 << 2))
+							{
+								int err = PlanarPyramidOV(surface, co, cv);
+								if (err < best)
+								{
+									nodesV[w].Error = err;
+									nodesV[w].Color = cv;
+									w++;
+								}
+							}
+						}
+						else
+						{
+							cv += (4 << 2);
+						}
+					}
 				}
 			}
 
@@ -5203,6 +5690,8 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 
 			nodesV[0x40].Color = (int)w;
 		}
+
+		memset(chunks, -1, sizeof(chunks));
 
 		for (int ih = 0, nh = nodesH[0x40].Color; ih < nh; ih++)
 		{
@@ -5219,6 +5708,22 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 					continue;
 
 				int cv = nodesV[iv].Color;
+
+				{
+					size_t index = (uint32_t)(ch & 0xF0) + (uint32_t)(cv >> 4);
+
+					int estimate = chunks[index];
+					if (estimate < 0)
+					{
+						int ch0 = ch & 0xF3;
+						int cv0 = cv & 0xF3;
+
+						estimate = PlanarStripe(surface, co, ch0, ch0 + (3 << 2), cv0, cv0 + (3 << 2));
+						chunks[index] = estimate;
+					}
+					if (estimate >= best)
+						continue;
+				}
 
 				int sum = PlanarPyramid(surface, co, ch, cv);
 				if (best > sum)
