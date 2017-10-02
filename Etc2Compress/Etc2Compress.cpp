@@ -392,7 +392,7 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -403,7 +403,7 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
 		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[index * 4]); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
 	 	level = _mm_min_epi32(level, sum); \
 		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
 		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
@@ -480,7 +480,7 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -495,7 +495,7 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
 		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[index * 4]); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
 	 	level = _mm_min_epi32(level, sum); \
 		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
 		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
@@ -580,7 +580,7 @@ static INLINED void CombineStripes(const Area& area, size_t offset, int chunks[0
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = stripes[(size_t)(uint32_t)area.Data[j + index]]; \
+		const __m128i* p = stripes[(size_t)(uint32_t)area.Data[j + (index)]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -588,7 +588,7 @@ static INLINED void CombineStripes(const Area& area, size_t offset, int chunks[0
 	} \
 
 #define STORE_QUAD(index) \
-	_mm_store_si128((__m128i*)&chunks[index << 2], _mm_mullo_epi32(sum##index, mweight)); \
+	_mm_store_si128((__m128i*)&chunks[(index) << 2], _mm_mullo_epi32(sum##index, mweight)); \
 
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
 
@@ -671,7 +671,7 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)area.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)area.Data[j + (index)]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -808,7 +808,7 @@ static INLINED void AlphaStripes(const Area& area, int chunks[0x10], const __m12
 	} \
 
 #define STORE_QUAD(index) \
-	_mm_store_si128((__m128i*)&chunks[index << 2], sum##index); \
+	_mm_store_si128((__m128i*)&chunks[(index) << 2], sum##index); \
 
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
@@ -1751,11 +1751,12 @@ static INLINED double CompareBlocksColorSSIM(const uint8_t* __restrict cell1, si
 }
 
 
-#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; if( va.Error > vb.Error ) { nodep[a] = vb; nodep[b] = va; } }
+//#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; if (va.Error > vb.Error) { nodep[a] = vb; nodep[b] = va; } }
+#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; Node vc = va; vc = (va.Error > vb.Error) ? vb : vc; vb = (va.Error > vb.Error) ? va : vb; nodep[a] = vc; nodep[b] = vb; }
 
 static void SortNodes2Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 1, b - 1)
+#define SWAP(a, b) SWAP_PAIR((a) - 1, (b) - 1)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=2&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1765,7 +1766,7 @@ static void SortNodes2Shifted(Node* __restrict nodep)
 
 static void SortNodes4Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 2, b - 2)
+#define SWAP(a, b) SWAP_PAIR((a) - 2, (b) - 2)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=4&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1779,7 +1780,7 @@ static void SortNodes4Shifted(Node* __restrict nodep)
 
 static void SortNodes6Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 3, b - 3)
+#define SWAP(a, b) SWAP_PAIR((a) - 3, (b) - 3)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=6&algorithm=best&output=macro
 	SWAP(1, 2);
@@ -1800,7 +1801,7 @@ static void SortNodes6Shifted(Node* __restrict nodep)
 
 static void SortNodes8Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 4, b - 4)
+#define SWAP(a, b) SWAP_PAIR((a) - 4, (b) - 4)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=8&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1828,7 +1829,7 @@ static void SortNodes8Shifted(Node* __restrict nodep)
 
 static void SortNodesCShifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 6, b - 6)
+#define SWAP(a, b) SWAP_PAIR((a) - 6, (b) - 6)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=12&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1876,7 +1877,7 @@ static void SortNodesCShifted(Node* __restrict nodep)
 
 static void SortNodes10Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 8, b - 8)
+#define SWAP(a, b) SWAP_PAIR((a) - 8, (b) - 8)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=16&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1945,7 +1946,7 @@ static void SortNodes10Shifted(Node* __restrict nodep)
 
 static void SortNodes18Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 0xC, b - 0xC)
+#define SWAP(a, b) SWAP_PAIR((a) - 0xC, (b) - 0xC)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=24&algorithm=best&output=macro
 	SWAP(1, 2);
@@ -2092,7 +2093,7 @@ static void SortNodes18Shifted(Node* __restrict nodep)
 
 static void SortNodes20Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 0x10, b - 0x10)
+#define SWAP(a, b) SWAP_PAIR((a) - 0x10, (b) - 0x10)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=32&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -2479,11 +2480,93 @@ static int __cdecl StableCompareNodes(const void* lhs, const void* rhs)
 	const Node* a = (const Node*)lhs;
 	const Node* b = (const Node*)rhs;
 
+	int w = a->Color - b->Color;
 	int v = a->Error - b->Error;
-	if (v == 0)
-		v = a->Color - b->Color;
-
+	v = (v == 0) ? w : v;
 	return v;
+}
+
+static INLINED void radix_sort(Node A[0x100], int N)
+{
+	Node B[0x100];
+
+	constexpr int radix = 4;
+	constexpr int bucketCount = 1 << radix;
+	constexpr int bucketMask = bucketCount - 1;
+
+	int counts[bucketCount];
+
+	int any_color = 0;
+	for (int i = 0; i < N; i++)
+	{
+		any_color |= A[i].Color;
+	}
+
+	for (int shift = 0; shift < 8; shift += radix)
+	{
+		if (((any_color >> shift) & bucketMask) == 0)
+			continue;
+
+		memset(counts, 0, sizeof(counts));
+
+		for (int i = 0; i < N; i++)
+		{
+			Node val = A[i];
+			counts[(val.Color >> shift) & bucketMask]++;
+			B[i] = val;
+		}
+
+		int total = 0;
+		for (int i = 0; i < bucketCount; i++)
+		{
+			int oldCount = counts[i];
+			counts[i] = total;
+			total += oldCount;
+		}
+
+		for (int i = 0; i < N; i++)
+		{
+			Node val = B[i];
+			int p = counts[(val.Color >> shift) & bucketMask]++;
+			A[p] = val;
+		}
+	}
+
+	int any_error = 0;
+	for (int i = 0; i < N; i++)
+	{
+		any_error |= A[i].Error;
+	}
+
+	for (int shift = 0; shift < 32; shift += radix)
+	{
+		if (((any_error >> shift) & bucketMask) == 0)
+			continue;
+
+		memset(counts, 0, sizeof(counts));
+
+		for (int i = 0; i < N; i++)
+		{
+			Node val = A[i];
+			counts[(val.Error >> shift) & bucketMask]++;
+			B[i] = val;
+		}
+
+		int total = 0;
+		for (int i = 0; i < bucketCount; i++)
+		{
+			int oldCount = counts[i];
+			counts[i] = total;
+			total += oldCount;
+		}
+
+		for (int i = 0; i < N; i++)
+		{
+			Node val = B[i];
+			int p = counts[(val.Error >> shift) & bucketMask]++;
+			A[p] = val;
+		}
+	}
 }
 
 static INLINED int Sort100(Node A[0x101], int water)
@@ -2500,7 +2583,14 @@ static INLINED int Sort100(Node A[0x101], int water)
 		}
 	}
 
-	qsort(A, w, sizeof(Node), &StableCompareNodes);
+	if (w <= 0x10)
+	{
+		qsort(A, w, sizeof(Node), &StableCompareNodes);
+	}
+	else
+	{
+		radix_sort(A, w);
+	}
 
 	return w;
 }

@@ -203,7 +203,7 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -214,7 +214,7 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
 		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[index * 4]); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
 	 	level = _mm_min_epi32(level, sum); \
 		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
 		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
@@ -291,7 +291,7 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 {
 #define PROCESS_PIXEL(index) \
 	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + index]]; \
+		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
 		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
 		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
 		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
@@ -306,7 +306,7 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
 		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[index * 4]); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
 	 	level = _mm_min_epi32(level, sum); \
 		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
 		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
@@ -1242,11 +1242,12 @@ static INLINED void DecompressBlockColor(const uint8_t input[8], uint8_t* __rest
 }
 
 
-#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; if( va.Error > vb.Error ) { nodep[a] = vb; nodep[b] = va; } }
+//#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; if (va.Error > vb.Error) { nodep[a] = vb; nodep[b] = va; } }
+#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; Node vc = va; vc = (va.Error > vb.Error) ? vb : vc; vb = (va.Error > vb.Error) ? va : vb; nodep[a] = vc; nodep[b] = vb; }
 
 static void SortNodes2Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 1, b - 1)
+#define SWAP(a, b) SWAP_PAIR((a) - 1, (b) - 1)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=2&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1256,7 +1257,7 @@ static void SortNodes2Shifted(Node* __restrict nodep)
 
 static void SortNodes4Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 2, b - 2)
+#define SWAP(a, b) SWAP_PAIR((a) - 2, (b) - 2)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=4&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1270,7 +1271,7 @@ static void SortNodes4Shifted(Node* __restrict nodep)
 
 static void SortNodes6Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 3, b - 3)
+#define SWAP(a, b) SWAP_PAIR((a) - 3, (b) - 3)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=6&algorithm=best&output=macro
 	SWAP(1, 2);
@@ -1291,7 +1292,7 @@ static void SortNodes6Shifted(Node* __restrict nodep)
 
 static void SortNodes8Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 4, b - 4)
+#define SWAP(a, b) SWAP_PAIR((a) - 4, (b) - 4)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=8&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1319,7 +1320,7 @@ static void SortNodes8Shifted(Node* __restrict nodep)
 
 static void SortNodesCShifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 6, b - 6)
+#define SWAP(a, b) SWAP_PAIR((a) - 6, (b) - 6)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=12&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1367,7 +1368,7 @@ static void SortNodesCShifted(Node* __restrict nodep)
 
 static void SortNodes10Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 8, b - 8)
+#define SWAP(a, b) SWAP_PAIR((a) - 8, (b) - 8)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=16&algorithm=best&output=macro
 	SWAP(0, 1);
@@ -1436,7 +1437,7 @@ static void SortNodes10Shifted(Node* __restrict nodep)
 
 static void SortNodes18Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 0xC, b - 0xC)
+#define SWAP(a, b) SWAP_PAIR((a) - 0xC, (b) - 0xC)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=24&algorithm=best&output=macro
 	SWAP(1, 2);
@@ -1583,7 +1584,7 @@ static void SortNodes18Shifted(Node* __restrict nodep)
 
 static void SortNodes20Shifted(Node* __restrict nodep)
 {
-#define SWAP(a, b) SWAP_PAIR(a - 0x10, b - 0x10)
+#define SWAP(a, b) SWAP_PAIR((a) - 0x10, (b) - 0x10)
 
 	// http://jgamble.ripco.net/cgi-bin/nw.cgi?inputs=32&algorithm=best&output=macro
 	SWAP(0, 1);
