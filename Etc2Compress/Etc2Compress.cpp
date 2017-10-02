@@ -4869,18 +4869,39 @@ static INLINED void PlanarCollectO(const Area& area, size_t offset, Surface& sur
 	}
 }
 
-static INLINED int PlanarPyramidO(const Surface& surface, int c)
+static INLINED void PlanarCollect(const Area& area, size_t offset, Surface& surface)
 {
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((c << 2) + 2), 0), 0);
+	memset(&surface, 0, sizeof(surface));
+
+	for (size_t i = 0, n = area.Count; i < n; i++)
+	{
+		int pos = area.Shift[i];
+
+		int x = pos >> 2;
+		int y = pos & 3;
+
+		surface.Mask[i] = -1;
+		surface.U[i] = (short)x;
+		surface.V[i] = (short)y;
+		surface.Data[i] = (short)area.Data[i * 4 + offset];
+	}
+}
+
+static INLINED int PlanarStripeO(const Surface& surface, int coL, int coH)
+{
+	__m128i moL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((coL << 2) + 2), 0), 0);
+	__m128i moH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((coH << 2) + 2), 0), 0);
 
 	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
 	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
 
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
+	__m128i mo0L = _mm_and_si128(mmask0, moL);
+	__m128i mo0H = _mm_and_si128(mmask0, moH);
+	__m128i mo1L = _mm_and_si128(mmask1, moL);
+	__m128i mo1H = _mm_and_si128(mmask1, moH);
 
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-c), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - c), 0), 0);
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-coL), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - coH), 0), 0);
 
 	__m128i mr0 = _mm_load_si128((const __m128i*)&surface.U[0]);
 	__m128i mr1 = _mm_load_si128((const __m128i*)&surface.U[8]);
@@ -4891,11 +4912,11 @@ static INLINED int PlanarPyramidO(const Surface& surface, int c)
 	__m128i mmax0 = _mm_mullo_epi16(mmax, mr0);
 	__m128i mmax1 = _mm_mullo_epi16(mmax, mr1);
 
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
+	mmin0 = _mm_add_epi16(mmin0, mo0L);
+	mmin1 = _mm_add_epi16(mmin1, mo1L);
 
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
+	mmax0 = _mm_add_epi16(mmax0, mo0H);
+	mmax1 = _mm_add_epi16(mmax1, mo1H);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -4917,24 +4938,6 @@ static INLINED int PlanarPyramidO(const Surface& surface, int c)
 	e = HorizontalSum4(e);
 
 	return _mm_cvtsi128_si32(e);
-}
-
-static INLINED void PlanarCollect(const Area& area, size_t offset, Surface& surface)
-{
-	memset(&surface, 0, sizeof(surface));
-
-	for (size_t i = 0, n = area.Count; i < n; i++)
-	{
-		int pos = area.Shift[i];
-
-		int x = pos >> 2;
-		int y = pos & 3;
-
-		surface.Mask[i] = -1;
-		surface.U[i] = (short)x;
-		surface.V[i] = (short)y;
-		surface.Data[i] = (short)area.Data[i * 4 + offset];
-	}
 }
 
 static INLINED int PlanarStripeOH(const Surface& surface, int co, int chL, int chH)
@@ -4984,82 +4987,6 @@ static INLINED int PlanarStripeOH(const Surface& surface, int co, int chL, int c
 
 	mmax0 = _mm_add_epi16(mmax0, mt0H);
 	mmax1 = _mm_add_epi16(mmax1, mt1H);
-
-	mmin0 = _mm_srai_epi16(mmin0, 2);
-	mmin1 = _mm_srai_epi16(mmin1, 2);
-
-	mmax0 = _mm_srai_epi16(mmax0, 2);
-	mmax1 = _mm_srai_epi16(mmax1, 2);
-
-	mmin0 = _mm_packus_epi16(mmin0, mmin1);
-	mmax0 = _mm_packus_epi16(mmax0, mmax1);
-
-	__m128i mzero = _mm_setzero_si128();
-
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
-
-	e0 = _mm_madd_epi16(e0, e0);
-	e1 = _mm_madd_epi16(e1, e1);
-
-	__m128i e = _mm_add_epi32(e0, e1);
-
-	e = HorizontalSum4(e);
-
-	return _mm_cvtsi128_si32(e);
-}
-
-static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
-{
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
-
-	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
-	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
-
-	__m128i mmin0 = _mm_mullo_epi16(mmin, my0);
-	__m128i mmin1 = _mm_mullo_epi16(mmin, my1);
-
-	__m128i mmax0 = _mm_mullo_epi16(mmax, my0);
-	__m128i mmax1 = _mm_mullo_epi16(mmax, my1);
-
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
-
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
-
-	//
-
-	__m128i mh = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(ch - co), 0), 0);
-
-	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
-
-	__m128i mt0 = _mm_mullo_epi16(mh, mx0);
-	__m128i mt1 = _mm_mullo_epi16(mh, mx1);
-
-	mmin0 = _mm_add_epi16(mmin0, mt0);
-	mmin1 = _mm_add_epi16(mmin1, mt1);
-
-	mmax0 = _mm_add_epi16(mmax0, mt0);
-	mmax1 = _mm_add_epi16(mmax1, mt1);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5173,82 +5100,6 @@ static INLINED int PlanarStripeOV(const Surface& surface, int co, int cvL, int c
 	return _mm_cvtsi128_si32(e);
 }
 
-static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
-{
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
-
-	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
-
-	__m128i mmin0 = _mm_mullo_epi16(mmin, mx0);
-	__m128i mmin1 = _mm_mullo_epi16(mmin, mx1);
-
-	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
-	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
-
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
-
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
-
-	//
-
-	__m128i mv = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cv - co), 0), 0);
-
-	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
-	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
-
-	__m128i mt0 = _mm_mullo_epi16(mv, my0);
-	__m128i mt1 = _mm_mullo_epi16(mv, my1);
-
-	mmin0 = _mm_add_epi16(mmin0, mt0);
-	mmin1 = _mm_add_epi16(mmin1, mt1);
-
-	mmax0 = _mm_add_epi16(mmax0, mt0);
-	mmax1 = _mm_add_epi16(mmax1, mt1);
-
-	mmin0 = _mm_srai_epi16(mmin0, 2);
-	mmin1 = _mm_srai_epi16(mmin1, 2);
-
-	mmax0 = _mm_srai_epi16(mmax0, 2);
-	mmax1 = _mm_srai_epi16(mmax1, 2);
-
-	mmin0 = _mm_packus_epi16(mmin0, mmin1);
-	mmax0 = _mm_packus_epi16(mmax0, mmax1);
-
-	__m128i mzero = _mm_setzero_si128();
-
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
-
-	e0 = _mm_madd_epi16(e0, e0);
-	e1 = _mm_madd_epi16(e1, e1);
-
-	__m128i e = _mm_add_epi32(e0, e1);
-
-	e = HorizontalSum4(e);
-
-	return _mm_cvtsi128_si32(e);
-}
-
 static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH, int cvL, int cvH)
 {
 	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
@@ -5296,6 +5147,208 @@ static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH
 
 	mmax0 = _mm_add_epi16(mmax0, mt0H);
 	mmax1 = _mm_add_epi16(mmax1, mt1H);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	mmin0 = _mm_packus_epi16(mmin0, mmin1);
+	mmax0 = _mm_packus_epi16(mmax0, mmax1);
+
+	__m128i mzero = _mm_setzero_si128();
+
+	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
+	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
+	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
+	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
+
+	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
+	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
+
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
+static INLINED int PlanarPyramidO(const Surface& surface, int c)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((c << 2) + 2), 0), 0);
+
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-c), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - c), 0), 0);
+
+	__m128i mr0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mr1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mmin0 = _mm_mullo_epi16(mmin, mr0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, mr1);
+
+	__m128i mmax0 = _mm_mullo_epi16(mmax, mr0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, mr1);
+
+	mmin0 = _mm_add_epi16(mmin0, mo0);
+	mmin1 = _mm_add_epi16(mmin1, mo1);
+
+	mmax0 = _mm_add_epi16(mmax0, mo0);
+	mmax1 = _mm_add_epi16(mmax1, mo1);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
+	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
+
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
+static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
+
+	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+	__m128i mmin0 = _mm_mullo_epi16(mmin, my0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, my1);
+
+	__m128i mmax0 = _mm_mullo_epi16(mmax, my0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, my1);
+
+	mmin0 = _mm_add_epi16(mmin0, mo0);
+	mmin1 = _mm_add_epi16(mmin1, mo1);
+
+	mmax0 = _mm_add_epi16(mmax0, mo0);
+	mmax1 = _mm_add_epi16(mmax1, mo1);
+
+	//
+
+	__m128i mh = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(ch - co), 0), 0);
+
+	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mt0 = _mm_mullo_epi16(mh, mx0);
+	__m128i mt1 = _mm_mullo_epi16(mh, mx1);
+
+	mmin0 = _mm_add_epi16(mmin0, mt0);
+	mmin1 = _mm_add_epi16(mmin1, mt1);
+
+	mmax0 = _mm_add_epi16(mmax0, mt0);
+	mmax1 = _mm_add_epi16(mmax1, mt1);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	mmin0 = _mm_packus_epi16(mmin0, mmin1);
+	mmax0 = _mm_packus_epi16(mmax0, mmax1);
+
+	__m128i mzero = _mm_setzero_si128();
+
+	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
+	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
+	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
+	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
+
+	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
+	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
+
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
+static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
+
+	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mmin0 = _mm_mullo_epi16(mmin, mx0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, mx1);
+
+	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
+
+	mmin0 = _mm_add_epi16(mmin0, mo0);
+	mmin1 = _mm_add_epi16(mmin1, mo1);
+
+	mmax0 = _mm_add_epi16(mmax0, mo0);
+	mmax1 = _mm_add_epi16(mmax1, mo1);
+
+	//
+
+	__m128i mv = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cv - co), 0), 0);
+
+	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+	__m128i mt0 = _mm_mullo_epi16(mv, my0);
+	__m128i mt1 = _mm_mullo_epi16(mv, my1);
+
+	mmin0 = _mm_add_epi16(mmin0, mt0);
+	mmin1 = _mm_add_epi16(mmin1, mt1);
+
+	mmax0 = _mm_add_epi16(mmax0, mt0);
+	mmax1 = _mm_add_epi16(mmax1, mt1);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5401,19 +5454,39 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 
 	PlanarCollectO(area, offset, surface);
 
+	int best = top;
+
 	{
 		size_t w = 0;
 
-		for (int i = 0; i < 0x80; i++)
+		for (int i = 0; i < 0x80; i += 0x20)
 		{
 			int co = (i << 1) + (i >> 6);
 
-			int err = PlanarPyramidO(surface, co);
-			if (err < top)
+			int stripe32 = PlanarStripeO(surface, co, co + (31 << 1));
+			if (stripe32 < best)
 			{
-				nodesO[w].Error = err;
-				nodesO[w].Color = co;
-				w++;
+				for (int j = 8; --j >= 0;)
+				{
+					int stripe4 = PlanarStripeO(surface, co, co + (3 << 1));
+					if (stripe4 < best)
+					{
+						for (int k = 4; --k >= 0; co += (1 << 1))
+						{
+							int err = PlanarPyramidO(surface, co);
+							if (err < best)
+							{
+								nodesO[w].Error = err;
+								nodesO[w].Color = co;
+								w++;
+							}
+						}
+					}
+					else
+					{
+						co += (4 << 1);
+					}
+				}
 			}
 		}
 
@@ -5424,8 +5497,6 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 	}
 
 	PlanarCollect(area, offset, surface);
-
-	int best = top;
 
 	for (int io = 0, no = nodesO[0x80].Color; io < no; io++)
 	{
@@ -5577,19 +5648,39 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 
 	PlanarCollectO(area, offset, surface);
 
+	int best = top;
+
 	{
 		size_t w = 0;
 
-		for (int i = 0; i < 0x40; i++)
+		for (int i = 0; i < 0x40; i += 0x10)
 		{
 			int co = (i << 2) + (i >> 4);
 
-			int err = PlanarPyramidO(surface, co);
-			if (err < top)
+			int stripe16 = PlanarStripeO(surface, co, co + (15 << 2));
+			if (stripe16 < best)
 			{
-				nodesO[w].Error = err;
-				nodesO[w].Color = co;
-				w++;
+				for (int j = 4; --j >= 0;)
+				{
+					int stripe4 = PlanarStripeO(surface, co, co + (3 << 2));
+					if (stripe4 < best)
+					{
+						for (int k = 4; --k >= 0; co += (1 << 2))
+						{
+							int err = PlanarPyramidO(surface, co);
+							if (err < best)
+							{
+								nodesO[w].Error = err;
+								nodesO[w].Color = co;
+								w++;
+							}
+						}
+					}
+					else
+					{
+						co += (4 << 2);
+					}
+				}
 			}
 		}
 
@@ -5600,8 +5691,6 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 	}
 
 	PlanarCollect(area, offset, surface);
-
-	int best = top;
 
 	for (int io = 0, no = nodesO[0x40].Color; io < no; io++)
 	{
