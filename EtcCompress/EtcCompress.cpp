@@ -2012,7 +2012,65 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 
 	int k = half.Count, i = 0;
 
-	while ((k -= 2) >= 0)
+	while ((k -= 3) >= 0)
+	{
+		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
+		__m128i my = _mm_load_si128((const __m128i*)&half.Data[i + 4]);
+		__m128i mz = _mm_load_si128((const __m128i*)&half.Data[i + 8]);
+
+		mx = _mm_packus_epi32(mx, mx);
+		my = _mm_packus_epi32(my, my);
+		mz = _mm_packus_epi32(mz, mz);
+
+		__m128i m10x = _mm_sub_epi16(mt10, mx);
+		__m128i m10y = _mm_sub_epi16(mt10, my);
+		__m128i m10z = _mm_sub_epi16(mt10, mz);
+		__m128i m32x = _mm_sub_epi16(mt32, mx);
+		__m128i m32y = _mm_sub_epi16(mt32, my);
+		__m128i m32z = _mm_sub_epi16(mt32, mz);
+
+		m10x = _mm_mullo_epi16(m10x, m10x);
+		m10y = _mm_mullo_epi16(m10y, m10y);
+		m10z = _mm_mullo_epi16(m10z, m10z);
+		m32x = _mm_mullo_epi16(m32x, m32x);
+		m32y = _mm_mullo_epi16(m32y, m32y);
+		m32z = _mm_mullo_epi16(m32z, m32z);
+
+		m10x = _mm_min_epu16(m10x, mlimit);
+		m10y = _mm_min_epu16(m10y, mlimit);
+		m10z = _mm_min_epu16(m10z, mlimit);
+		m32x = _mm_min_epu16(m32x, mlimit);
+		m32y = _mm_min_epu16(m32y, mlimit);
+		m32z = _mm_min_epu16(m32z, mlimit);
+
+		m10x = _mm_madd_epi16(m10x, mgrb);
+		m10y = _mm_madd_epi16(m10y, mgrb);
+		m10z = _mm_madd_epi16(m10z, mgrb);
+		m32x = _mm_madd_epi16(m32x, mgrb);
+		m32y = _mm_madd_epi16(m32y, mgrb);
+		m32z = _mm_madd_epi16(m32z, mgrb);
+
+		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
+		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
+		__m128i me4z = _mm_hadd_epi32(m10z, m32z);
+
+		__m128i me1x = HorizontalMinimum4(me4x);
+		__m128i me1y = HorizontalMinimum4(me4y);
+		__m128i me1z = HorizontalMinimum4(me4z);
+
+		sum = _mm_add_epi32(sum, me1x);
+		sum = _mm_add_epi32(sum, me1y);
+		sum = _mm_add_epi32(sum, me1z);
+
+		i += 12;
+
+		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
+			return water;
+	}
+
+	k = (k < 0) ? k + 3 : k;
+
+	if (k & 2)
 	{
 		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
 		__m128i my = _mm_load_si128((const __m128i*)&half.Data[i + 4]);
