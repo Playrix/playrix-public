@@ -4863,6 +4863,43 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 	return water;
 }
 
+static INLINED void ComputeBoundsT(const Area& area, size_t offset, int bounds_a[2])
+{
+	int L = 0xFF;
+	int H = 0;
+
+	int k = area.Count; size_t j = offset;
+	while (--k >= 0)
+	{
+		int v = area.Data[j]; j += 4;
+
+		L = Min(L, v);
+		H = Max(H, v);
+	}
+
+	bounds_a[0] = (L - (L >> 4)) >> 4; // div_down(L, 0x11);
+	bounds_a[1] = (H - (H >> 4) + 15) >> 4; // div_up(H, 0x11);
+}
+
+static INLINED void FilterLevelsT(Node nodes[0x100], int aL, int aH)
+{
+	int n = nodes[0x100].Color;
+	int w = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		Node temp = nodes[i];
+
+		int a = temp.Color >> 4;
+		if ((aL <= a) && (a <= aH))
+		{
+			nodes[w++] = temp;
+		}
+	}
+
+	nodes[0x100].Color = w;
+}
+
 static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_error)
 {
 	int water = input_error;
@@ -4870,10 +4907,16 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 	uint8_t best_a[4], best_b[4];
 	int best_q = 0;
 
+	int bounds_a[4][2];
+
 	alignas(16) int chunks0[0x10], chunks1[0x10], chunks2[0x10];
 	alignas(16) Node err0[0x101], err1[0x101], err2[0x101];
 
 	int memGB[0x100];
+
+	ComputeBoundsT(area, 0, bounds_a[0]);
+	ComputeBoundsT(area, 1, bounds_a[1]);
+	ComputeBoundsT(area, 2, bounds_a[2]);
 
 	for (int q = 0; q < 8; q++)
 	{
@@ -4897,6 +4940,10 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 		int min2 = err2[0x100].Error;
 		if (min0 + min1 + min2 >= water)
 			continue;
+
+		FilterLevelsT(err0, bounds_a[0][0], bounds_a[0][1]);
+		FilterLevelsT(err1, bounds_a[1][0], bounds_a[1][1]);
+		FilterLevelsT(err2, bounds_a[2][0], bounds_a[2][1]);
 
 		int n0 = Sort100(err0, water - min1 - min2);
 		int n1 = Sort100(err1, water - min0 - min2);
