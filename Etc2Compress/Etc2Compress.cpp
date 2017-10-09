@@ -6036,18 +6036,128 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 	return best * weight;
 }
 
+static INLINED int PlanarLinear(const Area& area, size_t offset, int weight, int water)
+{
+	int vx[13], vy[13], vz[13];
+
+	int k = 0;
+	for (size_t i = 0, n = area.Count; i < n; i++)
+	{
+		int pos = area.Shift[i];
+
+		int x = pos >> 2;
+		int y = pos & 3;
+
+		int r = x + y;
+		if (r > 4)
+			continue;
+
+		int z = area.Data[i * 4 + offset];
+
+		vx[k] = x;
+		vy[k] = y;
+		vz[k] = z;
+
+		k++;
+	}
+	if (k <= 3)
+		return 0;
+
+	// http://www.ilikebigbits.com/blog/2015/3/2/plane-from-points
+
+	int Sx = 0, Sy = 0, Sz = 0;
+
+	for (int i = 0; i < k; i++)
+	{
+		Sx += vx[i]; // [0..16]
+		Sy += vy[i]; // [0..16]
+		Sz += vz[i]; // [0..3315]
+	}
+
+	int Sxx = 0, Syy = 0;
+	int Sxy = 0, Syz = 0, Szx = 0;
+
+	for (int i = 0; i < k; i++)
+	{
+		int Rx = vx[i] * k - Sx; // [-16..39]
+		int Ry = vy[i] * k - Sy; // [-16..39]
+		int Rz = vz[i] * k - Sz; // [-3315..3315]
+
+		Sxx += Rx * Rx; // [0..19'773]
+		Syy += Ry * Ry; // [0..19'773]
+
+		Sxy += Rx * Ry; // [-8'112..19'773]
+		Syz += Ry * Rz; // [-129'285..129'285]
+		Szx += Rz * Rx; // [-129'285..129'285]
+	}
+
+	int64_t c = Sxx * Syy - Sxy * Sxy; // [0..390'971'529]
+	if (c == 0)
+		return 0;
+
+	int64_t a = (int64_t)Syz * Sxy - (int64_t)Szx * Syy; // 34-bit
+	int64_t b = (int64_t)Szx * Sxy - (int64_t)Syz * Sxx; // 34-bit
+
+	int64_t q = a * Sx + b * Sy + c * Sz;
+
+	int64_t ka = a * k;
+	int64_t kb = b * k;
+	int64_t kc = c * k;
+
+	int64_t sum = 0;
+
+	for (int i = 0; i < k; i++)
+	{
+		int64_t e = vx[i] * ka + vy[i] * kb + vz[i] * kc - q;
+
+		if (e < 0)
+		{
+			e = -e;
+		}
+		e /= kc;
+		if (e > 0)
+		{
+			e--;
+		}
+
+		sum += e * e;
+	}
+
+	sum *= weight;
+	if (sum >= water)
+		return water;
+
+	//int co = q / kc;
+	//int ch = (q - 4 * ka) / kc;
+	//int cv = (q - 4 * kb) / kc;
+
+	return (int)sum;
+}
+
 static int CompressBlockColorP(uint8_t output[8], const Area& area, int input_error)
 {
 	int g[3], r[3], b[3];
 
 	int water = input_error;
 
-	int err = Planar7(area, 0, g, kGreen, water);
-	if (err >= water)
+	int minG = PlanarLinear(area, 0, kGreen, water);
+	if (minG >= water)
 		return water;
 
-	err += Planar6(area, 1, r, kRed, water - err);
-	if (err >= water)
+	int minR = PlanarLinear(area, 1, kRed, water - minG);
+	if (minR >= water - minG)
+		return water;
+
+	int minB = PlanarLinear(area, 2, kBlue, water - minG - minR);
+	if (minB >= water - minG - minR)
+		return water;
+
+	int err = Planar7(area, 0, g, kGreen, water - minR - minB);
+	if (err >= water - minR - minB)
+		return water;
+
+	err += Planar6(area, 1, r, kRed, water - err - minB);
+	if (err >= water - minB)
 		return water;
 
 	err += Planar6(area, 2, b, kBlue, water - err);
