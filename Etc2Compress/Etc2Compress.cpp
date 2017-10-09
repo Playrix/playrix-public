@@ -7,6 +7,7 @@
 // LICENSE: https://mit-license.org
 
 //#define OPTION_LINEAR
+//#define OPTION_SLOWPOKE
 
 #ifdef WIN32
 #include <windows.h>
@@ -20,7 +21,11 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
+#ifndef OPTION_SLOWPOKE
 #include <smmintrin.h> // SSE4.1
+#else
+#include <emmintrin.h> // SSE2
+#endif
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -145,6 +150,121 @@ static const double g_ssim_16k2L = g_ssim_16k1L * 9;
 static const int WorkerThreadStackSize = 3 * 1024 * 1024;
 
 static int Stride;
+
+#ifdef OPTION_SLOWPOKE
+
+#undef _mm_abs_epi16
+#define _mm_abs_epi16 emu_abs_epi16
+
+static INLINED __m128i emu_abs_epi16(__m128i a)
+{
+	__m128i neg_a = _mm_sub_epi16(_mm_setzero_si128(), a);
+	return _mm_max_epi16(a, neg_a);
+}
+
+#undef _mm_hadd_epi32
+#define _mm_hadd_epi32 emu_hadd_epi32
+
+static INLINED __m128i emu_hadd_epi32(__m128i a, __m128i b)
+{
+	a = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 0, 3, 1));
+	b = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 0, 3, 1));
+
+	__m128i c = _mm_unpacklo_epi64(a, b);
+	__m128i d = _mm_unpackhi_epi64(a, b);
+
+	return _mm_add_epi32(c, d);
+}
+
+#undef _mm_cvtepu8_epi16
+#define _mm_cvtepu8_epi16 emu_cvtepu8_epi16
+
+static INLINED __m128i emu_cvtepu8_epi16(__m128i a)
+{
+	return _mm_unpacklo_epi8(a, _mm_setzero_si128());
+}
+
+#undef _mm_cvtepu8_epi32
+#define _mm_cvtepu8_epi32 emu_cvtepu8_epi32
+
+static INLINED __m128i emu_cvtepu8_epi32(__m128i a)
+{
+	__m128i zero = _mm_setzero_si128();
+	a = _mm_unpacklo_epi8(a, zero);
+	return _mm_unpacklo_epi16(a, zero);
+}
+
+#undef _mm_cvtepi16_epi32
+#define _mm_cvtepi16_epi32 emu_cvtepi16_epi32
+
+static INLINED __m128i emu_cvtepi16_epi32(__m128i a)
+{
+	__m128i sign = _mm_cmpgt_epi16(_mm_setzero_si128(), a);
+	return _mm_unpacklo_epi16(a, sign);
+}
+
+#undef _mm_min_epi32
+#define _mm_min_epi32 emu_min_epi32
+
+static INLINED __m128i emu_min_epi32(__m128i a, __m128i b)
+{
+	__m128i mask = _mm_cmplt_epi32(a, b);
+	return _mm_or_si128(_mm_and_si128(a, mask), _mm_andnot_si128(mask, b));
+}
+
+#undef _mm_min_epu16
+#define _mm_min_epu16 emu_min_epu16_7fff
+
+static INLINED __m128i emu_min_epu16_7fff(__m128i a, __m128i)
+{
+	__m128i sign = _mm_cmpgt_epi16(_mm_setzero_si128(), a);
+	return _mm_or_si128(_mm_andnot_si128(sign, a), _mm_srli_epi16(sign, 1));
+}
+
+#undef _mm_minpos_epu16
+#define _mm_minpos_epu16 emu_minpos_epu16_min
+
+static INLINED __m128i emu_minpos_epu16_min(__m128i a)
+{
+	__m128i zero = _mm_setzero_si128();
+	a = _mm_min_epi32(_mm_unpacklo_epi16(a, zero), _mm_unpackhi_epi16(a, zero));
+	a = _mm_min_epi32(a, _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 3, 0, 1)));
+	a = _mm_min_epi32(a, _mm_shuffle_epi32(a, _MM_SHUFFLE(0, 1, 2, 3)));
+	return a;
+}
+
+#undef  _mm_mullo_epi32
+#define _mm_mullo_epi32 emu_mullo_epi32
+
+static INLINED __m128i emu_mullo_epi32(__m128i a, __m128i b)
+{
+	__m128i c = _mm_mul_epu32(a, b);
+	a = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 3, 0, 1));
+	b = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 3, 0, 1));
+	__m128i d = _mm_mul_epu32(a, b);
+	c = _mm_shuffle_epi32(c, _MM_SHUFFLE(2, 0, 2, 0));
+	d = _mm_shuffle_epi32(d, _MM_SHUFFLE(2, 0, 2, 0));
+	return _mm_unpacklo_epi32(c, d);
+}
+
+#undef _mm_packus_epi32
+#define _mm_packus_epi32 emu_packus_epi32_small
+
+static INLINED __m128i emu_packus_epi32_small(__m128i a, __m128i b)
+{
+	a = _mm_shufflelo_epi16(a, _MM_SHUFFLE(2, 0, 2, 0));
+	b = _mm_shufflelo_epi16(b, _MM_SHUFFLE(2, 0, 2, 0));
+
+	a = _mm_shufflehi_epi16(a, _MM_SHUFFLE(2, 0, 2, 0));
+	b = _mm_shufflehi_epi16(b, _MM_SHUFFLE(2, 0, 2, 0));
+
+	a = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 0, 2, 0));
+	b = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 0, 2, 0));
+
+	return _mm_unpacklo_epi64(a, b);
+}
+
+#endif
 
 #ifdef WIN32
 
