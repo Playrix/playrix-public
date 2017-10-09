@@ -6810,6 +6810,19 @@ static __m128i PackTexture(uint8_t* dst_etc1, uint8_t* src_bgra, int src_w, int 
 	return _mm_unpacklo_epi64(_mm_cvtsi64_si128(mse), _mm_castpd_si128(_mm_load_sd(&ssim)));
 }
 
+static INLINED void IgnoreAlpha(uint8_t* src_bgra, int src_w, int src_h)
+{
+	for (int y = 0; y < src_h; y++)
+	{
+		uint8_t* w = &src_bgra[y * Stride + 3];
+
+		for (int x = 0; x < src_w; x++)
+		{
+			w[x * 4] = 1;
+		}
+	}
+}
+
 static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int radius)
 {
 	if (radius <= 0)
@@ -6870,6 +6883,7 @@ static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int ra
 int Etc2MainWithArgs(const std::vector<std::string>& args)
 {
 	bool flip = false;
+	bool mask = true;
 	int border = 1;
 
 	const char* src_name = nullptr;
@@ -6882,7 +6896,12 @@ int Etc2MainWithArgs(const std::vector<std::string>& args)
 
 		if (arg[0] == '/')
 		{
-			if (strcmp(arg, "/retina") == 0)
+			if (strcmp(arg, "/nomask") == 0)
+			{
+				mask = false;
+				continue;
+			}
+			else if (strcmp(arg, "/retina") == 0)
 			{
 				border = 2;
 				continue;
@@ -7011,7 +7030,14 @@ int Etc2MainWithArgs(const std::vector<std::string>& args)
 
 		memcpy(dst_texture_color, dst_texture_bgra, src_texture_h * src_texture_stride);
 
-		OutlineAlpha(dst_texture_color, src_texture_w, src_texture_h, border);
+		if (mask)
+		{
+			OutlineAlpha(dst_texture_color, src_texture_w, src_texture_h, border);
+		}
+		else
+		{
+			IgnoreAlpha(dst_texture_color, src_texture_w, src_texture_h);
+		}
 
 		v2 = PackTexture(dst_etc2 + 8, dst_texture_color, src_texture_w, src_texture_h, PackMode::CompressColorEnhanced, 8 * 2);
 		int64_t mse_color = _mm_cvtsi128_si64(v2);
@@ -7072,7 +7098,7 @@ int __cdecl main(int argc, char* argv[])
 {
 	if (argc < 2)
 	{
-		printf("Usage: Etc2Compress [/retina] src [dst] [/debug result.png]\n");
+		printf("Usage: Etc2Compress [/retina] [/nomask] src [dst] [/debug result.png]\n");
 		return 1;
 	}
 
