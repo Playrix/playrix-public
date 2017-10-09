@@ -6,6 +6,8 @@
 //
 // LICENSE: https://mit-license.org
 
+//#define OPTION_LINEAR
+
 #ifdef WIN32
 #include <windows.h>
 #pragma warning(push)
@@ -55,11 +57,17 @@ typedef struct alignas(16) { short Mask[16], U[16], V[16], Data[16]; } Surface;
 
 typedef struct alignas(8) { int Error, Color; } Node;
 
+#ifndef OPTION_LINEAR
+
 // http://www.brucelindbloom.com/index.html?WorkingSpaceInfo.html sRGB
 enum { kGreen = 715, kRed = 213, kBlue = 72 };
 
+#else
+
 // Linear RGB
-//enum { kGreen = 1, kRed = 1, kBlue = 1 };
+enum { kGreen = 1, kRed = 1, kBlue = 1 };
+
+#endif
 
 enum { kColor = kGreen + kRed + kBlue, kUnknownError = (255 * 255) * kColor * (4 * 4) + 1 };
 
@@ -86,9 +94,17 @@ alignas(16) static const short g_tableA[16][8] = {
 	{ -3, -5, -7, -9, 2, 4, 6, 8 }
 };
 
+#ifndef OPTION_LINEAR
+
 alignas(16) static const short g_GRB_I16[8] = { kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue, 0 };
 alignas(16) static const short g_GR_I16[8] = { kGreen, kRed, kGreen, kRed, kGreen, kRed, kGreen, kRed };
 alignas(16) static const short g_GB_I16[8] = { kGreen, kBlue, kGreen, kBlue, kGreen, kBlue, kGreen, kBlue };
+
+#else
+
+alignas(16) static const short g_GRB_I16[8] = { -1, -1, -1, 0, -1, -1, -1, 0 };
+
+#endif
 
 alignas(16) static const int g_colors4[0x10] =
 {
@@ -399,6 +415,8 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
 	} \
 
+#ifndef OPTION_LINEAR
+
 #define STORE_QUAD(index) \
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
@@ -411,6 +429,23 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
 		w += 4; \
 	} \
+
+#else
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_min_epi32(sum##index, mtop); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
+#endif
 
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
@@ -457,10 +492,16 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 		}
 	}
 
+#ifndef OPTION_LINEAR
 	int top = (water + weight - 1) / weight;
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
+#else
+	(void)weight;
+	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
+	__m128i level = mtop;
+#endif
 
 	size_t w = 0;
 
@@ -491,6 +532,8 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 		sum7 = _mm_add_epi32(sum7, _mm_load_si128(p + 7)); \
 	} \
 
+#ifndef OPTION_LINEAR
+
 #define STORE_QUAD(index) \
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
@@ -503,6 +546,23 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
 		w += 4; \
 	} \
+
+#else
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_min_epi32(sum##index, mtop); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
+#endif
 
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
@@ -553,10 +613,16 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 		}
 	}
 
+#ifndef OPTION_LINEAR
 	int top = (water + weight - 1) / weight;
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
+#else
+	(void)weight;
+	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
+	__m128i level = mtop;
+#endif
 
 	size_t w = 0;
 
@@ -587,10 +653,19 @@ static INLINED void CombineStripes(const Area& area, size_t offset, int chunks[0
 		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
 	} \
 
+#ifndef OPTION_LINEAR
+
 #define STORE_QUAD(index) \
 	_mm_store_si128((__m128i*)&chunks[(index) << 2], _mm_mullo_epi32(sum##index, mweight)); \
 
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
+#else
+
+#define STORE_QUAD(index) \
+	_mm_store_si128((__m128i*)&chunks[(index) << 2], sum##index); \
+
+	(void)weight;
+#endif
 
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
@@ -678,6 +753,8 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
 	} \
 
+#ifndef OPTION_LINEAR
+
 #define STORE_QUAD(index) \
 	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
@@ -696,6 +773,26 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)top), 0);
 	__m128i level = _mm_mullo_epi32(mtop, mweight);
+#else
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_min_epi32(sum##index, mtop); \
+		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi64_si128(colors)); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+	colors += 0x10101010; \
+
+	(void)weight;
+	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
+	__m128i level = mtop;
+#endif
 
 	size_t w = 0;
 
@@ -2637,7 +2734,9 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 
 	__m128i sum = _mm_setzero_si128();
 
+#ifndef OPTION_LINEAR
 	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+#endif
 
 	int k = half.Count, i = 0;
 
@@ -2658,6 +2757,7 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		__m128i m32y = _mm_sub_epi16(mt32, my);
 		__m128i m32z = _mm_sub_epi16(mt32, mz);
 
+#ifndef OPTION_LINEAR
 		m10x = _mm_mullo_epi16(m10x, m10x);
 		m10y = _mm_mullo_epi16(m10y, m10y);
 		m10z = _mm_mullo_epi16(m10z, m10z);
@@ -2678,6 +2778,21 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		m32x = _mm_madd_epi16(m32x, mgrb);
 		m32y = _mm_madd_epi16(m32y, mgrb);
 		m32z = _mm_madd_epi16(m32z, mgrb);
+#else
+		m10x = _mm_and_si128(m10x, mgrb);
+		m10y = _mm_and_si128(m10y, mgrb);
+		m10z = _mm_and_si128(m10z, mgrb);
+		m32x = _mm_and_si128(m32x, mgrb);
+		m32y = _mm_and_si128(m32y, mgrb);
+		m32z = _mm_and_si128(m32z, mgrb);
+
+		m10x = _mm_madd_epi16(m10x, m10x);
+		m10y = _mm_madd_epi16(m10y, m10y);
+		m10z = _mm_madd_epi16(m10z, m10z);
+		m32x = _mm_madd_epi16(m32x, m32x);
+		m32y = _mm_madd_epi16(m32y, m32y);
+		m32z = _mm_madd_epi16(m32z, m32z);
+#endif
 
 		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
 		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
@@ -2712,6 +2827,7 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		__m128i m32x = _mm_sub_epi16(mt32, mx);
 		__m128i m32y = _mm_sub_epi16(mt32, my);
 
+#ifndef OPTION_LINEAR
 		m10x = _mm_mullo_epi16(m10x, m10x);
 		m10y = _mm_mullo_epi16(m10y, m10y);
 		m32x = _mm_mullo_epi16(m32x, m32x);
@@ -2726,6 +2842,17 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		m10y = _mm_madd_epi16(m10y, mgrb);
 		m32x = _mm_madd_epi16(m32x, mgrb);
 		m32y = _mm_madd_epi16(m32y, mgrb);
+#else
+		m10x = _mm_and_si128(m10x, mgrb);
+		m10y = _mm_and_si128(m10y, mgrb);
+		m32x = _mm_and_si128(m32x, mgrb);
+		m32y = _mm_and_si128(m32y, mgrb);
+
+		m10x = _mm_madd_epi16(m10x, m10x);
+		m10y = _mm_madd_epi16(m10y, m10y);
+		m32x = _mm_madd_epi16(m32x, m32x);
+		m32y = _mm_madd_epi16(m32y, m32y);
+#endif
 
 		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
 		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
@@ -2750,6 +2877,7 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		__m128i m10 = _mm_sub_epi16(mt10, mx);
 		__m128i m32 = _mm_sub_epi16(mt32, mx);
 
+#ifndef OPTION_LINEAR
 		m10 = _mm_mullo_epi16(m10, m10);
 		m32 = _mm_mullo_epi16(m32, m32);
 
@@ -2758,6 +2886,13 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 
 		m10 = _mm_madd_epi16(m10, mgrb);
 		m32 = _mm_madd_epi16(m32, mgrb);
+#else
+		m10 = _mm_and_si128(m10, mgrb);
+		m32 = _mm_and_si128(m32, mgrb);
+
+		m10 = _mm_madd_epi16(m10, m10);
+		m32 = _mm_madd_epi16(m32, m32);
+#endif
 
 		__m128i me4 = _mm_hadd_epi32(m10, m32);
 		__m128i me1 = HorizontalMinimum4(me4);
@@ -2767,6 +2902,8 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
 	}
+
+#ifndef OPTION_LINEAR
 
 	static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
@@ -2811,6 +2948,8 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		sum = _mm_add_epi32(sum, me1);
 	}
 
+#endif
+
 	return _mm_cvtsi128_si32(sum);
 }
 
@@ -2829,11 +2968,15 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 
 	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
 
+#ifndef OPTION_LINEAR
 	__m128i mgr = _mm_load_si128((const __m128i*)g_GR_I16);
+#endif
 
 	__m128i sum = _mm_setzero_si128();
 
+#ifndef OPTION_LINEAR
 	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+#endif
 
 	int k = half.Count, i = 0;
 
@@ -2859,6 +3002,7 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		__m128i m3210z = _mm_sub_epi16(mt3210, mz);
 		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
 
+#ifndef OPTION_LINEAR
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 		m3210z = _mm_mullo_epi16(m3210z, m3210z);
@@ -2873,6 +3017,12 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		m3210y = _mm_madd_epi16(m3210y, mgr);
 		m3210z = _mm_madd_epi16(m3210z, mgr);
 		m3210w = _mm_madd_epi16(m3210w, mgr);
+#else
+		m3210x = _mm_madd_epi16(m3210x, m3210x);
+		m3210y = _mm_madd_epi16(m3210y, m3210y);
+		m3210z = _mm_madd_epi16(m3210z, m3210z);
+		m3210w = _mm_madd_epi16(m3210w, m3210w);
+#endif
 
 		__m128i me1x = HorizontalMinimum4(m3210x);
 		__m128i me1y = HorizontalMinimum4(m3210y);
@@ -2904,6 +3054,7 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
 		__m128i m3210y = _mm_sub_epi16(mt3210, my);
 
+#ifndef OPTION_LINEAR
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 
@@ -2912,6 +3063,10 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 
 		m3210x = _mm_madd_epi16(m3210x, mgr);
 		m3210y = _mm_madd_epi16(m3210y, mgr);
+#else
+		m3210x = _mm_madd_epi16(m3210x, m3210x);
+		m3210y = _mm_madd_epi16(m3210y, m3210y);
+#endif
 
 		__m128i me1x = HorizontalMinimum4(m3210x);
 		__m128i me1y = HorizontalMinimum4(m3210y);
@@ -2932,9 +3087,13 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		mx = _mm_packus_epi32(mx, mx);
 
 		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
+#ifndef OPTION_LINEAR
 		m3210 = _mm_mullo_epi16(m3210, m3210);
 		m3210 = _mm_min_epu16(m3210, mlimit);
 		m3210 = _mm_madd_epi16(m3210, mgr);
+#else
+		m3210 = _mm_madd_epi16(m3210, m3210);
+#endif
 
 		__m128i me1 = HorizontalMinimum4(m3210);
 
@@ -2943,6 +3102,8 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
 	}
+
+#ifndef OPTION_LINEAR
 
 	static_assert(kGreen >= kRed, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
@@ -2977,6 +3138,8 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 
 		sum = _mm_add_epi32(sum, me1);
 	}
+
+#endif
 
 	return _mm_cvtsi128_si32(sum);
 }
@@ -3301,6 +3464,7 @@ static INLINED void ComputeTableColor(const Half& half, const uint8_t color[4], 
 		__m128i m2 = _mm_sub_epi16(mt2, mx);
 		__m128i m3 = _mm_sub_epi16(mt3, mx);
 
+#ifndef OPTION_LINEAR
 		m0 = _mm_mullo_epi16(m0, m0);
 		m1 = _mm_mullo_epi16(m1, m1);
 		m2 = _mm_mullo_epi16(m2, m2);
@@ -3310,6 +3474,17 @@ static INLINED void ComputeTableColor(const Half& half, const uint8_t color[4], 
 		m1 = _mm_mullo_epi32(m1, mgrb);
 		m2 = _mm_mullo_epi32(m2, mgrb);
 		m3 = _mm_mullo_epi32(m3, mgrb);
+#else
+		m0 = _mm_and_si128(m0, mgrb);
+		m1 = _mm_and_si128(m1, mgrb);
+		m2 = _mm_and_si128(m2, mgrb);
+		m3 = _mm_and_si128(m3, mgrb);
+
+		m0 = _mm_mullo_epi16(m0, m0);
+		m1 = _mm_mullo_epi16(m1, m1);
+		m2 = _mm_mullo_epi16(m2, m2);
+		m3 = _mm_mullo_epi16(m3, m3);
+#endif
 
 		__m128i m10 = _mm_hadd_epi32(m0, m1);
 		__m128i m32 = _mm_hadd_epi32(m2, m3);
@@ -3999,7 +4174,9 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 
 	__m128i sum = _mm_setzero_si128();
 
+#ifndef OPTION_LINEAR
 	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+#endif
 
 	int k = area.Count, i = 0;
 
@@ -4020,6 +4197,7 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		__m128i m32y = _mm_sub_epi16(mt32, my);
 		__m128i m32z = _mm_sub_epi16(mt32, mz);
 
+#ifndef OPTION_LINEAR
 		m10x = _mm_mullo_epi16(m10x, m10x);
 		m10y = _mm_mullo_epi16(m10y, m10y);
 		m10z = _mm_mullo_epi16(m10z, m10z);
@@ -4040,6 +4218,21 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		m32x = _mm_madd_epi16(m32x, mgrb);
 		m32y = _mm_madd_epi16(m32y, mgrb);
 		m32z = _mm_madd_epi16(m32z, mgrb);
+#else
+		m10x = _mm_and_si128(m10x, mgrb);
+		m10y = _mm_and_si128(m10y, mgrb);
+		m10z = _mm_and_si128(m10z, mgrb);
+		m32x = _mm_and_si128(m32x, mgrb);
+		m32y = _mm_and_si128(m32y, mgrb);
+		m32z = _mm_and_si128(m32z, mgrb);
+
+		m10x = _mm_madd_epi16(m10x, m10x);
+		m10y = _mm_madd_epi16(m10y, m10y);
+		m10z = _mm_madd_epi16(m10z, m10z);
+		m32x = _mm_madd_epi16(m32x, m32x);
+		m32y = _mm_madd_epi16(m32y, m32y);
+		m32z = _mm_madd_epi16(m32z, m32z);
+#endif
 
 		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
 		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
@@ -4074,6 +4267,7 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		__m128i m32x = _mm_sub_epi16(mt32, mx);
 		__m128i m32y = _mm_sub_epi16(mt32, my);
 
+#ifndef OPTION_LINEAR
 		m10x = _mm_mullo_epi16(m10x, m10x);
 		m10y = _mm_mullo_epi16(m10y, m10y);
 		m32x = _mm_mullo_epi16(m32x, m32x);
@@ -4088,6 +4282,17 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		m10y = _mm_madd_epi16(m10y, mgrb);
 		m32x = _mm_madd_epi16(m32x, mgrb);
 		m32y = _mm_madd_epi16(m32y, mgrb);
+#else
+		m10x = _mm_and_si128(m10x, mgrb);
+		m10y = _mm_and_si128(m10y, mgrb);
+		m32x = _mm_and_si128(m32x, mgrb);
+		m32y = _mm_and_si128(m32y, mgrb);
+
+		m10x = _mm_madd_epi16(m10x, m10x);
+		m10y = _mm_madd_epi16(m10y, m10y);
+		m32x = _mm_madd_epi16(m32x, m32x);
+		m32y = _mm_madd_epi16(m32y, m32y);
+#endif
 
 		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
 		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
@@ -4112,6 +4317,7 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		__m128i m10 = _mm_sub_epi16(mt10, mx);
 		__m128i m32 = _mm_sub_epi16(mt32, mx);
 
+#ifndef OPTION_LINEAR
 		m10 = _mm_mullo_epi16(m10, m10);
 		m32 = _mm_mullo_epi16(m32, m32);
 
@@ -4120,6 +4326,13 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 
 		m10 = _mm_madd_epi16(m10, mgrb);
 		m32 = _mm_madd_epi16(m32, mgrb);
+#else
+		m10 = _mm_and_si128(m10, mgrb);
+		m32 = _mm_and_si128(m32, mgrb);
+
+		m10 = _mm_madd_epi16(m10, m10);
+		m32 = _mm_madd_epi16(m32, m32);
+#endif
 
 		__m128i me4 = _mm_hadd_epi32(m10, m32);
 		__m128i me1 = HorizontalMinimum4(me4);
@@ -4129,6 +4342,8 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
 	}
+
+#ifndef OPTION_LINEAR
 
 	static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
@@ -4173,6 +4388,8 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		sum = _mm_add_epi32(sum, me1);
 	}
 
+#endif
+
 	return (int)_mm_cvtsi128_si64(sum);
 }
 
@@ -4185,11 +4402,15 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 
 	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
 
+#ifndef OPTION_LINEAR
 	__m128i mgr = _mm_load_si128((const __m128i*)g_GR_I16);
+#endif
 
 	__m128i sum = _mm_setzero_si128();
 
+#ifndef OPTION_LINEAR
 	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+#endif
 
 	int k = area.Count, i = 0;
 
@@ -4215,6 +4436,7 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 		__m128i m3210z = _mm_sub_epi16(mt3210, mz);
 		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
 
+#ifndef OPTION_LINEAR
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 		m3210z = _mm_mullo_epi16(m3210z, m3210z);
@@ -4229,6 +4451,12 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 		m3210y = _mm_madd_epi16(m3210y, mgr);
 		m3210z = _mm_madd_epi16(m3210z, mgr);
 		m3210w = _mm_madd_epi16(m3210w, mgr);
+#else
+		m3210x = _mm_madd_epi16(m3210x, m3210x);
+		m3210y = _mm_madd_epi16(m3210y, m3210y);
+		m3210z = _mm_madd_epi16(m3210z, m3210z);
+		m3210w = _mm_madd_epi16(m3210w, m3210w);
+#endif
 
 		__m128i me1x = HorizontalMinimum4(m3210x);
 		__m128i me1y = HorizontalMinimum4(m3210y);
@@ -4260,6 +4488,7 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
 		__m128i m3210y = _mm_sub_epi16(mt3210, my);
 
+#ifndef OPTION_LINEAR
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 
@@ -4268,6 +4497,10 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 
 		m3210x = _mm_madd_epi16(m3210x, mgr);
 		m3210y = _mm_madd_epi16(m3210y, mgr);
+#else
+		m3210x = _mm_madd_epi16(m3210x, m3210x);
+		m3210y = _mm_madd_epi16(m3210y, m3210y);
+#endif
 
 		__m128i me1x = HorizontalMinimum4(m3210x);
 		__m128i me1y = HorizontalMinimum4(m3210y);
@@ -4288,9 +4521,13 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 		mx = _mm_packus_epi32(mx, mx);
 
 		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
+#ifndef OPTION_LINEAR
 		m3210 = _mm_mullo_epi16(m3210, m3210);
 		m3210 = _mm_min_epu16(m3210, mlimit);
 		m3210 = _mm_madd_epi16(m3210, mgr);
+#else
+		m3210 = _mm_madd_epi16(m3210, m3210);
+#endif
 
 		__m128i me1 = HorizontalMinimum4(m3210);
 
@@ -4299,6 +4536,8 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
 	}
+
+#ifndef OPTION_LINEAR
 
 	static_assert(kGreen >= kRed, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
@@ -4334,6 +4573,8 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 		sum = _mm_add_epi32(sum, me1);
 	}
 
+#endif
+
 	return (int)_mm_cvtsi128_si64(sum);
 }
 
@@ -4346,11 +4587,15 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 
 	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
 
+#ifndef OPTION_LINEAR
 	__m128i mgb = _mm_load_si128((const __m128i*)g_GB_I16);
+#endif
 
 	__m128i sum = _mm_setzero_si128();
 
+#ifndef OPTION_LINEAR
 	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+#endif
 
 	int k = area.Count, i = 0;
 
@@ -4376,6 +4621,7 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 		__m128i m3210z = _mm_sub_epi16(mt3210, mz);
 		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
 
+#ifndef OPTION_LINEAR
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 		m3210z = _mm_mullo_epi16(m3210z, m3210z);
@@ -4390,6 +4636,12 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 		m3210y = _mm_madd_epi16(m3210y, mgb);
 		m3210z = _mm_madd_epi16(m3210z, mgb);
 		m3210w = _mm_madd_epi16(m3210w, mgb);
+#else
+		m3210x = _mm_madd_epi16(m3210x, m3210x);
+		m3210y = _mm_madd_epi16(m3210y, m3210y);
+		m3210z = _mm_madd_epi16(m3210z, m3210z);
+		m3210w = _mm_madd_epi16(m3210w, m3210w);
+#endif
 
 		__m128i me1x = HorizontalMinimum4(m3210x);
 		__m128i me1y = HorizontalMinimum4(m3210y);
@@ -4421,6 +4673,7 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
 		__m128i m3210y = _mm_sub_epi16(mt3210, my);
 
+#ifndef OPTION_LINEAR
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 
@@ -4429,6 +4682,10 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 
 		m3210x = _mm_madd_epi16(m3210x, mgb);
 		m3210y = _mm_madd_epi16(m3210y, mgb);
+#else
+		m3210x = _mm_madd_epi16(m3210x, m3210x);
+		m3210y = _mm_madd_epi16(m3210y, m3210y);
+#endif
 
 		__m128i me1x = HorizontalMinimum4(m3210x);
 		__m128i me1y = HorizontalMinimum4(m3210y);
@@ -4449,9 +4706,13 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 		mx = _mm_packus_epi32(mx, mx);
 
 		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
+#ifndef OPTION_LINEAR
 		m3210 = _mm_mullo_epi16(m3210, m3210);
 		m3210 = _mm_min_epu16(m3210, mlimit);
 		m3210 = _mm_madd_epi16(m3210, mgb);
+#else
+		m3210 = _mm_madd_epi16(m3210, m3210);
+#endif
 
 		__m128i me1 = HorizontalMinimum4(m3210);
 
@@ -4460,6 +4721,8 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
 	}
+
+#ifndef OPTION_LINEAR
 
 	static_assert(kGreen >= kBlue, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
@@ -4495,6 +4758,8 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 		sum = _mm_add_epi32(sum, me1);
 	}
 
+#endif
+
 	return (int)_mm_cvtsi128_si64(sum);
 }
 
@@ -4526,6 +4791,7 @@ static INLINED void ComputeTableColorFour(const Area& area, __m128i mc0, __m128i
 		__m128i m2 = _mm_sub_epi16(mc2, mx);
 		__m128i m3 = _mm_sub_epi16(mc3, mx);
 
+#ifndef OPTION_LINEAR
 		m0 = _mm_mullo_epi16(m0, m0);
 		m1 = _mm_mullo_epi16(m1, m1);
 		m2 = _mm_mullo_epi16(m2, m2);
@@ -4535,6 +4801,17 @@ static INLINED void ComputeTableColorFour(const Area& area, __m128i mc0, __m128i
 		m1 = _mm_mullo_epi32(m1, mgrb);
 		m2 = _mm_mullo_epi32(m2, mgrb);
 		m3 = _mm_mullo_epi32(m3, mgrb);
+#else
+		m0 = _mm_and_si128(m0, mgrb);
+		m1 = _mm_and_si128(m1, mgrb);
+		m2 = _mm_and_si128(m2, mgrb);
+		m3 = _mm_and_si128(m3, mgrb);
+
+		m0 = _mm_mullo_epi16(m0, m0);
+		m1 = _mm_mullo_epi16(m1, m1);
+		m2 = _mm_mullo_epi16(m2, m2);
+		m3 = _mm_mullo_epi16(m3, m3);
+#endif
 
 		__m128i m10 = _mm_hadd_epi32(m0, m1);
 		__m128i m32 = _mm_hadd_epi32(m2, m3);
@@ -7092,9 +7369,15 @@ int Etc2MainWithArgs(const std::vector<std::string>& args)
 
 		if (mse_color > 0)
 		{
+#ifndef OPTION_LINEAR
 			printf("      SubTexture RGB wPSNR = %f, wSSIM_4x4 = %.8f\n",
 				10.0 * log((255.0 * 255.0) * kColor * (src_texture_h * src_texture_w) / mse_color) / log(10.0),
 				ssim_color * 16.0 / (src_texture_h * src_texture_w));
+#else
+			printf("      SubTexture RGB PSNR = %f, SSIM_4x4 = %.8f\n",
+				10.0 * log((255.0 * 255.0) * kColor * (src_texture_h * src_texture_w) / mse_color) / log(10.0),
+				ssim_color * 16.0 / (src_texture_h * src_texture_w));
+#endif
 		}
 		else
 		{
