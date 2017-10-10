@@ -245,7 +245,7 @@ protected:
 public:
 	void Start()
 	{
-		int n = std::thread::hardware_concurrency();
+		int n = Max(1, (int)std::thread::hardware_concurrency());
 		_Running = n;
 
 		for (int i = 0; i < n; i++)
