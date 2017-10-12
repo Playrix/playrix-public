@@ -1282,7 +1282,7 @@ static INLINED double CompareBlocksAlphaSSIM(const uint8_t* __restrict cell1, si
 
 static INLINED void ComputeTableAlphaEnhanced(uint8_t output[8], const Area& area, int alpha, int q)
 {
-	uint64_t answer = (alpha << 8) | q;
+	uint64_t answer = (uint32_t)((alpha << 8) | q);
 
 	__m128i mscale = _mm_shufflelo_epi16(_mm_cvtsi64_si128((size_t)(uint32_t)(q >> 4)), 0);
 	mscale = _mm_unpacklo_epi64(mscale, mscale);
@@ -3334,7 +3334,7 @@ struct AdjustStateColor
 
 	INLINED void Init(const Half& half, int water, int q)
 	{
-		bool f = false;
+		constexpr bool f = false;
 		flag_sort = f;
 		flag_error = f;
 		flag_minimum = f;
@@ -4146,7 +4146,7 @@ static double EstimateChromaDispersion(const Half& half)
 		sbb += b * b;
 	}
 
-	return (srr * n - sr * sr) * g_r_nn[n - 2] + (sbb * n - sb * sb) * g_b_nn[n - 2];
+	return double(srr * n - sr * sr) * g_r_nn[n - 2] + double(sbb * n - sb * sb) * g_b_nn[n - 2];
 }
 
 static int CompressBlockColor(uint8_t output[8], const uint8_t* __restrict cell, size_t stride, int input_error)
@@ -5278,7 +5278,7 @@ static INLINED void ComputeBoundsT(const Area& area, size_t offset, int bounds_a
 	bounds_a[1] = (H - (H >> 4) + 15) >> 4; // div_up(H, 0x11);
 }
 
-static INLINED void FilterLevelsT(Node nodes[0x100], int aL, int aH)
+static INLINED void FilterLevelsT(Node nodes[0x100 + 1], int aL, int aH)
 {
 	int n = nodes[0x100].Color;
 	int w = 0;

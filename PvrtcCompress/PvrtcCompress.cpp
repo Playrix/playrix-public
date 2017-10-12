@@ -393,7 +393,7 @@ public:
 
 	INLINED void PseudoInverse(const float M[R][C])
 	{
-		bool two = (C == 2);
+		constexpr bool two = (C == 2);
 		if (two)
 		{
 			float T[C][C];
@@ -4551,7 +4551,7 @@ struct Window1
 			for (int x = 0; x < 7; x++)
 			{
 				uint32_t v = (uint32_t)Field[y + 3][x + 3];
-				P[y * 7 + x] = (((v) & 0xFF) * kBlue + ((v >> 8) & 0xFF) * kGreen + ((v >> 16) & 0xFF) * kRed) * (1.f / kColor);
+				P[y * 7 + x] = float(((v) & 0xFF) * kBlue + ((v >> 8) & 0xFF) * kGreen + ((v >> 16) & 0xFF) * kRed) * (1.f / kColor);
 			}
 		}
 
@@ -4820,7 +4820,7 @@ struct Window4
 			for (int x = 0; x < 11; x++)
 			{
 				uint32_t v = (uint32_t)Field[y + 3][x + 3];
-				P[y * 11 + x] = (((v) & 0xFF) * kBlue + ((v >> 8) & 0xFF) * kGreen + ((v >> 16) & 0xFF) * kRed) * (1.f / kColor);
+				P[y * 11 + x] = float(((v) & 0xFF) * kBlue + ((v >> 8) & 0xFF) * kGreen + ((v >> 16) & 0xFF) * kRed) * (1.f / kColor);
 			}
 		}
 
@@ -5001,7 +5001,7 @@ struct Window4
 			{
 				int changes = 0;
 
-				if ((changes != 0) || (11 < mark))
+				if (/*(changes != 0) ||*/ (11 < mark))
 				{
 					bool better = false;
 					Matrix[1][1]->Climber(better);
@@ -5591,8 +5591,6 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 
 	uint8_t* dst_texture_bgra = new uint8_t[src_texture_s * src_texture_stride];
 
-	uint8_t* mask_agrb = new uint8_t[src_texture_s * src_texture_stride];
-
 	int Size = (src_texture_s * src_texture_s) >> 1;
 
 	InitTwiddle();
@@ -5601,9 +5599,13 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 
 	if ((dst_rgba_name != nullptr) && dst_rgba_name[0])
 	{
+		uint8_t* mask_agrb = new uint8_t[src_texture_s * src_texture_stride];
+
 		ComputeAlphaMaskWithOutline(mask_agrb, src_texture_bgra, src_texture_s, border);
 
 		PackTexture(dst_rgba_name, Size, dst_texture_bgra, "wPSNR", mask_agrb, src_texture_bgra, src_texture_s, passes, incremental);
+
+		delete[] mask_agrb;
 	}
 
 	if ((result_name != nullptr) && result_name[0])
@@ -5611,7 +5613,6 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 		WriteImage(result_name, dst_texture_bgra, src_texture_s, src_texture_s, flip);
 	}
 
-	delete[] mask_agrb;
 	delete[] dst_texture_bgra;
 	delete[] src_texture_bgra;
 	delete[] src_image_bgra;
