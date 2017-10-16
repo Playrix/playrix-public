@@ -314,12 +314,12 @@ static INLINED void __debugbreak()
 
 #endif
 
-static INLINED int Min(int x, int y)
+static INLINED constexpr int Min(int x, int y)
 {
 	return (x < y) ? x : y;
 }
 
-static INLINED int Max(int x, int y)
+static INLINED constexpr int Max(int x, int y)
 {
 	return (x > y) ? x : y;
 }
@@ -996,7 +996,7 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 			}
 		}
 
-		size_t colors = (uint32_t)((((z << 4) & 0xC0) + ((z << 2) & 0xC)) * 0x01010101 + 0x03020100);
+		size_t colors = uint32_t(((z << 4) & 0xC0) + ((z << 2) & 0xC)) * 0x01010101u + 0x03020100u;
 
 		STORE_QUAD(0);
 		STORE_QUAD(1);
@@ -3025,9 +3025,8 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 
 #ifndef OPTION_LINEAR
 
-	static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kBlue)
+	if (int_sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 	{
 		return int_sum;
 	}
@@ -3225,9 +3224,8 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 
 #ifndef OPTION_LINEAR
 
-	static_assert(kGreen >= kRed, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kRed)
+	if (int_sum < 0x7FFF * Min(kGreen, kRed))
 	{
 		return int_sum;
 	}
@@ -4465,9 +4463,8 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 
 #ifndef OPTION_LINEAR
 
-	static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kBlue)
+	if (int_sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 	{
 		return int_sum;
 	}
@@ -4659,9 +4656,8 @@ static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1
 
 #ifndef OPTION_LINEAR
 
-	static_assert(kGreen >= kRed, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kRed)
+	if (int_sum < 0x7FFF * Min(kGreen, kRed))
 	{
 		return int_sum;
 	}
@@ -4844,9 +4840,8 @@ static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1
 
 #ifndef OPTION_LINEAR
 
-	static_assert(kGreen >= kBlue, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kBlue)
+	if (int_sum < 0x7FFF * Min(kGreen, kBlue))
 	{
 		return int_sum;
 	}
@@ -5111,7 +5106,7 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 				a[1] = (uint8_t)ExpandColor4(c1 >> 4);
 				b[1] = (uint8_t)ExpandColor4(c1 & 0xF);
 
-				int compare_a1a0_b1b0 = ((a[1] - b[1]) << 16) + ((a[0] - b[0]) << 8);
+				int compare_a1a0_b1b0 = ((a[1] - b[1]) * (1 << 16)) + ((a[0] - b[0]) * (1 << 8));
 				if (compare_a1a0_b1b0 > 0) // if ((a[1] << 16) + (a[0] << 8) > (b[1] << 16) + (b[0] << 8))
 					continue;
 
@@ -6849,6 +6844,11 @@ public:
 
 		_First = nullptr;
 		_Last = nullptr;
+
+		_mse = 0;
+		_ssim = 0;
+		_Running = 0;
+		_Mode = PackMode::CompressAlphaEnhanced;
 	}
 
 	~Worker()
@@ -7508,7 +7508,7 @@ int Etc2MainWithArgs(const std::vector<std::string>& args)
 
 		PackTexture(dst_etc2 + 8, dst_texture_color, src_texture_w, src_texture_h, PackMode::DecompressColorEnhanced, 8 * 2);
 
-		size_t delta_dst = dst_texture_bgra - dst_texture_color;
+		ptrdiff_t delta_dst = dst_texture_bgra - dst_texture_color;
 
 		for (int y = 0; y < src_texture_h; y++)
 		{

@@ -129,12 +129,12 @@ static INLINED void __debugbreak()
 
 #endif
 
-static INLINED int Min(int x, int y)
+static INLINED constexpr int Min(int x, int y)
 {
 	return (x < y) ? x : y;
 }
 
-static INLINED int Max(int x, int y)
+static INLINED constexpr int Max(int x, int y)
 {
 	return (x > y) ? x : y;
 }
@@ -2139,9 +2139,8 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 			return water;
 	}
 
-	static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kBlue)
+	if (int_sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 	{
 		return int_sum;
 	}
@@ -2315,9 +2314,8 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 			return water;
 	}
 
-	static_assert(kGreen >= kRed, "Error");
 	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * kRed)
+	if (int_sum < 0x7FFF * Min(kGreen, kRed))
 	{
 		return int_sum;
 	}
@@ -3587,6 +3585,11 @@ public:
 
 		_First = nullptr;
 		_Last = nullptr;
+
+		_mse = 0;
+		_ssim = 0;
+		_Running = 0;
+		_Mode = PackMode::CompressAlpha;
 	}
 
 	~Worker()
@@ -4226,7 +4229,7 @@ int EtcMainWithArgs(const std::vector<std::string>& args)
 
 		PackTexture(dst_color_etc1, dst_texture_color, src_texture_w, src_texture_h, PackMode::DecompressColor);
 
-		size_t delta_dst = dst_texture_bgra - dst_texture_color;
+		ptrdiff_t delta_dst = dst_texture_bgra - dst_texture_color;
 
 		for (int y = 0; y < src_texture_h; y++)
 		{

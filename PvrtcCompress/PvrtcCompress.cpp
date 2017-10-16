@@ -65,12 +65,12 @@ static INLINED int Sqr(int x)
 	return x * x;
 }
 
-static INLINED int Min(int x, int y)
+static INLINED constexpr int Min(int x, int y)
 {
 	return (x < y) ? x : y;
 }
 
-static INLINED int Max(int x, int y)
+static INLINED constexpr int Max(int x, int y)
 {
 	return (x > y) ? x : y;
 }
@@ -107,11 +107,11 @@ static INLINED __m128i HorizontalMinimum4(__m128i me4)
 static int Stride;
 
 static int* _Image;
-static size_t _ImageToMaskDelta;
+static ptrdiff_t _ImageToMaskDelta;
 static int _Size;
 static int _Mask;
 
-static volatile int _Changes;
+static std::atomic_int _Changes;
 
 typedef void(*PBlockKernel)(int y, int x);
 
@@ -341,6 +341,7 @@ protected:
 public:
 	Fire()
 	{
+		memset((void*)_Flags, 0, sizeof(_Flags));
 	}
 
 	void MarkAll()
@@ -389,11 +390,12 @@ protected:
 public:
 	SVD()
 	{
+		static_assert(((R == 49) && (C == 2)) || ((R == 121) && (C == 8)), "Error");
 	}
 
 	INLINED void PseudoInverse(const float M[R][C])
 	{
-		constexpr bool two = (C == 2);
+		constexpr bool two = (C < 3);
 		if (two)
 		{
 			float T[C][C];
@@ -1456,8 +1458,7 @@ struct Block
 
 	INLINED void PackOpaqueTransparent4x4(const __m128i interpolation[4][4], int& errorO, uint32_t& answerO, int& errorT, uint32_t& answerT) const
 	{
-		static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-		if (Error < 0x7FFF * kBlue)
+		if (Error < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 		{
 			const int* source = &_Image[(Y << 2) * _Size + (X << 2)];
 
@@ -1482,8 +1483,7 @@ struct Block
 			FastPackOpaqueTransparentPixel_Pair(interpolation, source[0], codesO, codesT, 3, 0, 24, sumO, sumT);
 			FastPackOpaqueTransparentPixel_Pair(interpolation, source[2], codesO, codesT, 3, 2, 28, sumO, sumT);
 
-			static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-			if (Min(sumO, sumT) < 0x7FFF * kBlue)
+			if (Min(sumO, sumT) < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 			{
 				errorO = sumO;
 				answerO = codesO;
@@ -2593,23 +2593,20 @@ struct Block
 		if (sum >= water)
 			return sum;
 
-		static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-		if (sum < 0x7FFF * kBlue)
+		if (sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 		{
 			return sum;
 		}
 
 		sum = 0;
 
-		static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-		if (sum9 < 0x7FFF * kBlue)
+		if (sum9 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 		{
 			sum = sum9;
 		}
 		else
 		{
-			static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-			if (sum4 < 0x7FFF * kBlue)
+			if (sum4 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 			{
 				sum = sum4;
 			}
@@ -3812,23 +3809,20 @@ struct Block
 		if (sum >= water)
 			return sum;
 
-		static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-		if (sum < 0x7FFF * kBlue)
+		if (sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 		{
 			return sum;
 		}
 
 		sum = 0;
 
-		static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-		if (sum9 < 0x7FFF * kBlue)
+		if (sum9 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 		{
 			sum = sum9;
 		}
 		else
 		{
-			static_assert((kGreen >= kBlue) && (kRed >= kBlue), "Error");
-			if (sum4 < 0x7FFF * kBlue)
+			if (sum4 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
 			{
 				sum = sum4;
 			}
@@ -4468,7 +4462,7 @@ struct Window1
 {
 	alignas(16) Block* Matrix[3][3];
 
-	int _unused0, _unused1;
+	int64_t unused;
 
 	alignas(16) int Field[12][12];
 
@@ -5107,7 +5101,7 @@ static void BlockKernel_Climber(int y, int x)
 
 	if (better)
 	{
-		_Changes = 1;
+		_Changes.store(1);
 		_Fire.MarkArea(y - 1, y + 1, x - 1, x + 1);
 	}
 
@@ -5129,7 +5123,7 @@ static void BlockKernel_Window1(int y, int x)
 
 	if (better)
 	{
-		_Changes = 1;
+		_Changes.store(1);
 		_Fire.MarkArea(y - 1, y + 1, x - 1, x + 1);
 	}
 
@@ -5144,7 +5138,9 @@ static void BlockKernel_Window4(int y, int x)
 		int yn = (y + 1) & _Mask;
 		int xn = (x + 1) & _Mask;
 
-		bool warm = _Fire.Has(y, xn, 4) | _Fire.Has(yn, x, 4) | _Fire.Has(yn, xn, 4);
+		bool warm = _Fire.Has(y, xn, 4);
+		warm |= _Fire.Has(yn, x, 4);
+		warm |= _Fire.Has(yn, xn, 4);
 		if (!warm)
 			return;
 	}
@@ -5158,7 +5154,7 @@ static void BlockKernel_Window4(int y, int x)
 
 	if (better)
 	{
-		_Changes = 1;
+		_Changes.store(1);
 		_Fire.MarkArea(y - 1, y + 2, x - 1, x + 2);
 	}
 
@@ -5309,9 +5305,9 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 			printf("\b\b\b\b\b\b\b\b");
 			printf("Climber\t\t\t");
 
-			_Changes = 0;
+			_Changes.store(0);
 			_Worker.RunKernel(&BlockKernel_Climber, kStep, 0x20);
-			if (_Changes)
+			if (_Changes.load())
 			{
 				last_climber = true;
 				continue;
@@ -5333,9 +5329,9 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 			printf("\b\b\b\b\b\b\b\b");
 			printf("Window1\t\t");
 
-			_Changes = 0;
+			_Changes.store(0);
 			_Worker.RunKernel(&BlockKernel_Window1, kStep, 8);
-			if (_Changes)
+			if (_Changes.load())
 			{
 				quota_climber = CLIMBER;
 				last_window1 = true;
@@ -5348,9 +5344,9 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 			printf("\b\b\b\b\b\b\b\b");
 			printf("Window4\t");
 
-			_Changes = 0;
+			_Changes.store(0);
 			_Worker.RunKernel(&BlockKernel_Window4, kStep, 2);
-			if (_Changes)
+			if (_Changes.load())
 			{
 				quota_climber = CLIMBER;
 				quota_window1 = WINDOW1;
