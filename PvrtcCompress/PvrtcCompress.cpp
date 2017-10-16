@@ -47,10 +47,8 @@ enum { kAlpha = 1000, kGreen = 672, kRed = 245, kBlue = 83 };
 enum { kColor = kGreen + kRed + kBlue, kCapacity = 2048 >> 2, kStep = 8 };
 
 alignas(16) static const int g_AGRB[4] = { kAlpha, kGreen, kRed, kBlue };
-alignas(16) static const int g_GRB[4] = { 0, kGreen, kRed, kBlue };
 
 alignas(16) static const short g_AGRB_I16[8] = { kAlpha, kGreen, kRed, kBlue, kAlpha, kGreen, kRed, kBlue };
-alignas(16) static const short g_GRB_I16[8] = { 0, kGreen, kRed, kBlue, 0, kGreen, kRed, kBlue };
 alignas(16) static const short g_Transparent2_I16[8] = { 0, -1, -1, -1, 0, -1, -1, -1 };
 
 // (m2,m1,m3,m0)
@@ -95,6 +93,16 @@ static INLINED int MakeColor3(int c)
 static INLINED int MakeAlpha3(int a)
 {
 	return a & 0xE;
+}
+
+static INLINED int ExpandColor5(int c)
+{
+	return (c << 3) + (c >> 2);
+}
+
+static INLINED int ExpandAlpha4(int a)
+{
+	return (a << 4) | a;
 }
 
 static INLINED __m128i HorizontalMinimum4(__m128i me4)
@@ -922,7 +930,7 @@ struct Block
 			int b = MakeColor5(M128I_I16(Colors, 3));
 
 			int b1 = MakeColor4(b);
-			int e1 = Sqr(b - b1) * kBlue + Sqr(a - 0xF) * kAlpha;
+			int e1 = Sqr(ExpandColor5(b) - ExpandColor5(b1)) * kBlue + Sqr(ExpandAlpha4(a) - 0xFF) * kAlpha;
 
 			if (e1 <= 0)
 			{
@@ -934,7 +942,10 @@ struct Block
 				int g0 = MakeColor4(g);
 				int b0 = MakeColor3(b);
 				int a0 = MakeAlpha3(a);
-				int e0 = Sqr(r - r0) * kRed + Sqr(g - g0) * kGreen + Sqr(b - b0) * kBlue + Sqr(a - a0) * kAlpha;
+				int e0 = Sqr(ExpandColor5(r) - ExpandColor5(r0)) * kRed +
+					Sqr(ExpandColor5(g) - ExpandColor5(g0)) * kGreen +
+					Sqr(ExpandColor5(b) - ExpandColor5(b0)) * kBlue +
+					Sqr(ExpandAlpha4(a) - ExpandAlpha4(a0)) * kAlpha;
 
 				if (e1 <= e0)
 				{
@@ -954,13 +965,16 @@ struct Block
 			int r = MakeColor5(M128I_I16(Colors, 6));
 			int b = MakeColor5(M128I_I16(Colors, 7));
 
-			int e1 = Sqr(a - 0xF) * kAlpha;
+			int e1 = Sqr(ExpandAlpha4(a) - 0xFF) * kAlpha;
 
 			int r0 = MakeColor4(r);
 			int g0 = MakeColor4(g);
 			int b0 = MakeColor4(b);
 			int a0 = MakeAlpha3(a);
-			int e0 = Sqr(r - r0) * kRed + Sqr(g - g0) * kGreen + Sqr(b - b0) * kBlue + Sqr(a - a0) * kAlpha;
+			int e0 = Sqr(ExpandColor5(r) - ExpandColor5(r0)) * kRed +
+				Sqr(ExpandColor5(g) - ExpandColor5(g0)) * kGreen +
+				Sqr(ExpandColor5(b) - ExpandColor5(b0)) * kBlue +
+				Sqr(ExpandAlpha4(a) - ExpandAlpha4(a0)) * kAlpha;
 
 			if (e1 <= e0)
 			{
@@ -1151,11 +1165,6 @@ struct Block
 		mC = _mm_add_epi16(_mm_srai_epi16(mC, 1), _mm_srai_epi16(mC, 5 + 1));
 
 		return _mm_blend_epi16(mC, ma, 0x11);
-	}
-
-	INLINED static __m128i Macro_ExpandC_GRB(__m128i mC)
-	{
-		return _mm_add_epi16(_mm_srai_epi16(mC, 1), _mm_srai_epi16(mC, 5 + 1));
 	}
 
 	INLINED static void Interpolate2x2(__m128i interpolation[4][4], const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x)
@@ -2853,1163 +2862,6 @@ struct Block
 		}
 	}
 
-	///////////////////////
-	// Fast Estimate GRB //
-	///////////////////////
-
-	INLINED static void FastEstimateOpaqueTransparent_GRB_Pair(__m128i mD, __m128i mV, int x, int& sumO, int& sumT, const int* source)
-	{
-		__m128i mCx, mCy;
-		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
-
-		__m128i mc = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source));
-
-		mCx = Macro_ExpandC_GRB(mCx);
-		mCy = Macro_ExpandC_GRB(mCy);
-
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta)));
-
-		//
-
-		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
-		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
-
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-
-		mA = _mm_madd_epi16(mA, magrb);
-		mB = _mm_madd_epi16(mB, magrb);
-		mAC = _mm_madd_epi16(mAC, magrb);
-		mBC = _mm_madd_epi16(mBC, magrb);
-		mAT = _mm_madd_epi16(mAT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-		__m128i m2T = _mm_hadd_epi32(mAT, mAT);
-
-		{
-			m2C = _mm_min_epi32(m2C, m2);
-			m2C = _mm_min_epi32(m2C, _mm_shuffle_epi32(m2C, _MM_SHUFFLE(1, 0, 3, 2)));
-
-			sumO += _mm_cvtsi128_si32(m2C);
-			sumO += _mm_cvtsi128_si32(_mm_shuffle_epi32(m2C, _MM_SHUFFLE(2, 3, 0, 1)));
-		}
-		{
-			m2T = _mm_min_epi32(m2T, m2);
-			m2T = _mm_min_epi32(m2T, _mm_shuffle_epi32(m2T, _MM_SHUFFLE(1, 0, 3, 2)));
-
-			sumT += _mm_cvtsi128_si32(m2T);
-			sumT += _mm_cvtsi128_si32(_mm_shuffle_epi32(m2T, _MM_SHUFFLE(2, 3, 0, 1)));
-		}
-	}
-
-
-	INLINED static int FastEstimateTransparent_GRB_Pair(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mCx, mCy;
-		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
-
-		__m128i mc = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source));
-
-		mCx = Macro_ExpandC_GRB(mCx);
-		mCy = Macro_ExpandC_GRB(mCy);
-
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta)));
-
-		//
-
-		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
-		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
-
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-
-		mA = _mm_madd_epi16(mA, magrb);
-		mB = _mm_madd_epi16(mB, magrb);
-		mAT = _mm_madd_epi16(mAT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2T = _mm_hadd_epi32(mAT, mAT);
-
-		{
-			m2T = _mm_min_epi32(m2T, m2);
-			m2T = _mm_min_epi32(m2T, _mm_shuffle_epi32(m2T, _MM_SHUFFLE(1, 0, 3, 2)));
-
-			return _mm_cvtsi128_si32(m2T) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2T, _MM_SHUFFLE(2, 3, 0, 1)));
-		}
-	}
-
-	INLINED static int FastEstimateOpaque_GRB_Pair(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mCx, mCy;
-		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
-
-		__m128i mc = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source));
-
-		mCx = Macro_ExpandC_GRB(mCx);
-		mCy = Macro_ExpandC_GRB(mCy);
-
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta)));
-
-		//
-
-		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
-		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
-
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
-
-		mA = _mm_madd_epi16(mA, magrb);
-		mB = _mm_madd_epi16(mB, magrb);
-		mAC = _mm_madd_epi16(mAC, magrb);
-		mBC = _mm_madd_epi16(mBC, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-
-		{
-			m2C = _mm_min_epi32(m2C, m2);
-			m2C = _mm_min_epi32(m2C, _mm_shuffle_epi32(m2C, _MM_SHUFFLE(1, 0, 3, 2)));
-
-			return _mm_cvtsi128_si32(m2C) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2C, _MM_SHUFFLE(2, 3, 0, 1)));
-		}
-	}
-
-	INLINED static int FastEstimateTransparent_GRB_Duo(__m128i mD, __m128i mV, int x, const int* source0, const int* source1)
-	{
-		__m128i mCx, mCy;
-		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
-
-		__m128i mcx = _mm_cvtsi32_si128(*source0);
-		__m128i mcy = _mm_cvtsi32_si128(*source1);
-		__m128i mc = _mm_cvtepu8_epi16(_mm_unpacklo_epi32(mcx, mcy));
-
-		mCx = Macro_ExpandC_GRB(mCx);
-		mCy = Macro_ExpandC_GRB(mCy);
-
-		__m128i mmaskx = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source0 + _ImageToMaskDelta));
-		__m128i mmasky = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source1 + _ImageToMaskDelta));
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_unpacklo_epi32(mmaskx, mmasky));
-
-		//
-
-		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
-		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
-
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-
-		mA = _mm_madd_epi16(mA, magrb);
-		mB = _mm_madd_epi16(mB, magrb);
-		mAT = _mm_madd_epi16(mAT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2T = _mm_hadd_epi32(mAT, mAT);
-
-		{
-			m2T = _mm_min_epi32(m2T, m2);
-			m2T = _mm_min_epi32(m2T, _mm_shuffle_epi32(m2T, _MM_SHUFFLE(1, 0, 3, 2)));
-
-			return _mm_cvtsi128_si32(m2T) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2T, _MM_SHUFFLE(2, 3, 0, 1)));
-		}
-	}
-
-	INLINED static int FastEstimateOpaque_GRB_Duo(__m128i mD, __m128i mV, int x, const int* source0, const int* source1)
-	{
-		__m128i mCx, mCy;
-		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
-
-		__m128i mcx = _mm_cvtsi32_si128(*source0);
-		__m128i mcy = _mm_cvtsi32_si128(*source1);
-		__m128i mc = _mm_cvtepu8_epi16(_mm_unpacklo_epi32(mcx, mcy));
-
-		mCx = Macro_ExpandC_GRB(mCx);
-		mCy = Macro_ExpandC_GRB(mCy);
-
-		__m128i mmaskx = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source0 + _ImageToMaskDelta));
-		__m128i mmasky = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source1 + _ImageToMaskDelta));
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_unpacklo_epi32(mmaskx, mmasky));
-
-		//
-
-		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
-		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
-
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
-
-		mA = _mm_madd_epi16(mA, magrb);
-		mB = _mm_madd_epi16(mB, magrb);
-		mAC = _mm_madd_epi16(mAC, magrb);
-		mBC = _mm_madd_epi16(mBC, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-
-		{
-			m2C = _mm_min_epi32(m2C, m2);
-			m2C = _mm_min_epi32(m2C, _mm_shuffle_epi32(m2C, _MM_SHUFFLE(1, 0, 3, 2)));
-
-			return _mm_cvtsi128_si32(m2C) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2C, _MM_SHUFFLE(2, 3, 0, 1)));
-		}
-	}
-
-	INLINED static int FastEstimateTransparent_GRB(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mC = Macro_ExpandC_GRB(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(*source));
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_unpacklo_epi64(mc, mc);
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mC, mC);
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-
-		__m128i m2 = _mm_unpacklo_epi64(mA, mB);
-		__m128i m2T = _mm_unpacklo_epi64(mAT, mAT);
-
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta)));
-		mmask = _mm_unpacklo_epi64(mmask, mmask);
-
-		m2 = _mm_sub_epi16(m2, mc);
-		m2T = _mm_sub_epi16(m2T, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		m2 = _mm_mullo_epi16(m2, m2);
-		m2T = _mm_mullo_epi16(m2T, m2T);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		m2 = _mm_min_epu16(m2, mlimit);
-		m2T = _mm_min_epu16(m2T, mlimit);
-
-		m2 = _mm_madd_epi16(m2, magrb);
-		m2T = _mm_madd_epi16(m2T, magrb);
-
-		__m128i me4 = _mm_hadd_epi32(m2, m2T);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		return _mm_cvtsi128_si32(me1);
-	}
-
-	INLINED static int FastEstimateOpaque_GRB(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mC = Macro_ExpandC_GRB(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(*source));
-		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
-		mc = _mm_unpacklo_epi64(mc, mc);
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mC, mC);
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		__m128i m2 = _mm_unpacklo_epi64(mA, mB);
-		__m128i m2C = _mm_unpacklo_epi64(mAC, mBC);
-
-		__m128i mmask = _mm_cvtepi8_epi16(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta)));
-		mmask = _mm_unpacklo_epi64(mmask, mmask);
-
-		m2 = _mm_sub_epi16(m2, mc);
-		m2C = _mm_sub_epi16(m2C, mc);
-
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-
-		m2 = _mm_mullo_epi16(m2, m2);
-		m2C = _mm_mullo_epi16(m2C, m2C);
-
-		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_GRB_I16));
-
-		m2 = _mm_min_epu16(m2, mlimit);
-		m2C = _mm_min_epu16(m2C, mlimit);
-
-		m2 = _mm_madd_epi16(m2, magrb);
-		m2C = _mm_madd_epi16(m2C, magrb);
-
-		__m128i me4 = _mm_hadd_epi32(m2, m2C);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		return _mm_cvtsi128_si32(me1);
-	}
-
-	INLINED void FastEstimateOpaqueTransparent2x2_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x, int& sumO, int& sumT) const
-	{
-		__m128i mDL, mDR, mVL, mVR;
-		Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-		__m128i mD0, mV0, mD1, mV1;
-		Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-		const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-		FastEstimateOpaqueTransparent_GRB_Pair(mD0, mV0, x, sumO, sumT, source);
-		FastEstimateOpaqueTransparent_GRB_Pair(mD1, mV1, x, sumO, sumT, source + _Size);
-	}
-
-	INLINED int FastEstimate2x2_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD0, mV0, mD1, mV1;
-			Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateTransparent_GRB_Pair(mD0, mV0, x, source);
-			sum += FastEstimateTransparent_GRB_Pair(mD1, mV1, x, source + _Size);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD0, mV0, mD1, mV1;
-			Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateOpaque_GRB_Pair(mD0, mV0, x, source);
-			sum += FastEstimateOpaque_GRB_Pair(mD1, mV1, x, source + _Size);
-
-			return sum;
-		}
-	}
-
-	INLINED int FastEstimate2x1_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateTransparent_GRB_Pair(mD, mV, x, source);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateOpaque_GRB_Pair(mD, mV, x, source);
-
-			return sum;
-		}
-	}
-
-	INLINED int FastEstimate1x2_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDT, mDB, mVT, mVB;
-			Macro_Gradient(mDT, mDB, mVT, mVB, b00, b10, b01, b11, x, y);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDT, mDB, mVT, mVB, mD, mV, x);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateTransparent_GRB_Duo(mD, mV, y, source, source + _Size);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDT, mDB, mVT, mVB;
-			Macro_Gradient(mDT, mDB, mVT, mVB, b00, b10, b01, b11, x, y);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDT, mDB, mVT, mVB, mD, mV, x);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateOpaque_GRB_Duo(mD, mV, y, source, source + _Size);
-
-			return sum;
-		}
-	}
-
-	INLINED int FastEstimate1x1_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			return FastEstimateTransparent_GRB(mD, mV, x, source);
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			return FastEstimateOpaque_GRB(mD, mV, x, source);
-		}
-	}
-
-	//////////////////////////
-	// Precise Estimate GRB //
-	//////////////////////////
-
-	INLINED static void PreciseEstimateOpaqueTransparent_GRB(__m128i mD, __m128i mV, int x, int& sumO, int& sumT, const int* source)
-	{
-		__m128i mC = Macro_ExpandC_GRB(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*source));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
-
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-
-		__m128i magrb = _mm_load_si128((const __m128i*)g_GRB);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta))));
-
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAC = _mm_mullo_epi32(mAC, magrb);
-		mBC = _mm_mullo_epi32(mBC, magrb);
-		mAT = _mm_mullo_epi32(mAT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-		__m128i m2T = _mm_hadd_epi32(mAT, mAT);
-
-		{
-			__m128i me4 = _mm_hadd_epi32(m2, m2C);
-			__m128i me1 = HorizontalMinimum4(me4);
-
-			sumO += _mm_cvtsi128_si32(me1);
-		}
-		{
-			__m128i me4 = _mm_hadd_epi32(m2, m2T);
-			__m128i me1 = HorizontalMinimum4(me4);
-
-			sumT += _mm_cvtsi128_si32(me1);
-		}
-	}
-
-
-	INLINED static int PreciseEstimateTransparent_GRB(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mC = Macro_ExpandC_GRB(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*source));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
-
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-
-		__m128i magrb = _mm_load_si128((const __m128i*)g_GRB);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta))));
-
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAT = _mm_mullo_epi32(mAT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2T = _mm_hadd_epi32(mAT, mAT);
-
-		__m128i me4 = _mm_hadd_epi32(m2, m2T);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		return _mm_cvtsi128_si32(me1);
-	}
-
-	INLINED static int PreciseEstimateOpaque_GRB(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mC = Macro_ExpandC_GRB(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*source));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
-
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-
-		__m128i magrb = _mm_load_si128((const __m128i*)g_GRB);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta))));
-
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAC = _mm_mullo_epi32(mAC, magrb);
-		mBC = _mm_mullo_epi32(mBC, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-
-		__m128i me4 = _mm_hadd_epi32(m2, m2C);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		return _mm_cvtsi128_si32(me1);
-	}
-
-	INLINED void PreciseEstimateOpaqueTransparent2x2_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x, int& sumO, int& sumT) const
-	{
-		__m128i mDL, mDR, mVL, mVR;
-		Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-		__m128i mD0, mV0, mD1, mV1;
-		Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-		const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-		PreciseEstimateOpaqueTransparent_GRB(mD0, mV0, x + 0, sumO, sumT, source + 0);
-		PreciseEstimateOpaqueTransparent_GRB(mD0, mV0, x + 1, sumO, sumT, source + 1);
-
-		source += _Size;
-
-		PreciseEstimateOpaqueTransparent_GRB(mD1, mV1, x + 0, sumO, sumT, source + 0);
-		PreciseEstimateOpaqueTransparent_GRB(mD1, mV1, x + 1, sumO, sumT, source + 1);
-	}
-
-	INLINED int PreciseEstimate2x2_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD0, mV0, mD1, mV1;
-			Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateTransparent_GRB(mD0, mV0, x + 0, source + 0);
-			sum += PreciseEstimateTransparent_GRB(mD0, mV0, x + 1, source + 1);
-
-			source += _Size;
-
-			sum += PreciseEstimateTransparent_GRB(mD1, mV1, x + 0, source + 0);
-			sum += PreciseEstimateTransparent_GRB(mD1, mV1, x + 1, source + 1);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD0, mV0, mD1, mV1;
-			Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateOpaque_GRB(mD0, mV0, x + 0, source + 0);
-			sum += PreciseEstimateOpaque_GRB(mD0, mV0, x + 1, source + 1);
-
-			source += _Size;
-
-			sum += PreciseEstimateOpaque_GRB(mD1, mV1, x + 0, source + 0);
-			sum += PreciseEstimateOpaque_GRB(mD1, mV1, x + 1, source + 1);
-
-			return sum;
-		}
-	}
-
-	INLINED int PreciseEstimate2x1_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateTransparent_GRB(mD, mV, x + 0, source + 0);
-			sum += PreciseEstimateTransparent_GRB(mD, mV, x + 1, source + 1);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateOpaque_GRB(mD, mV, x + 0, source + 0);
-			sum += PreciseEstimateOpaque_GRB(mD, mV, x + 1, source + 1);
-
-			return sum;
-		}
-	}
-
-	INLINED int PreciseEstimate1x2_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDT, mDB, mVT, mVB;
-			Macro_Gradient(mDT, mDB, mVT, mVB, b00, b10, b01, b11, x, y);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDT, mDB, mVT, mVB, mD, mV, x);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateTransparent_GRB(mD, mV, y + 0, source);
-			sum += PreciseEstimateTransparent_GRB(mD, mV, y + 1, source + _Size);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDT, mDB, mVT, mVB;
-			Macro_Gradient(mDT, mDB, mVT, mVB, b00, b10, b01, b11, x, y);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDT, mDB, mVT, mVB, mD, mV, x);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateOpaque_GRB(mD, mV, y + 0, source);
-			sum += PreciseEstimateOpaque_GRB(mD, mV, y + 1, source + _Size);
-
-			return sum;
-		}
-	}
-
-	INLINED int PreciseEstimate1x1_GRB(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (IsEmpty)
-			return 0;
-
-		if (Data[1] & 1u)
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			return PreciseEstimateTransparent_GRB(mD, mV, x, source);
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			return PreciseEstimateOpaque_GRB(mD, mV, x, source);
-		}
-	}
-
-	int64_t Estimate7x7_GRB(int64_t water) const
-	{
-		int64_t sum4, sum9;
-
-		int64_t sum = 0;
-
-		if (!IsEmpty)
-		{
-			int sumO = 0, sumT = 0;
-
-			FastEstimateOpaqueTransparent2x2_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 0, sumO, sumT);
-			sum = (sumO <= sumT) ? sumO : sumT;
-			if (sum >= water)
-				return sum;
-
-			FastEstimateOpaqueTransparent2x2_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 2, sumO, sumT);
-			sum = (sumO <= sumT) ? sumO : sumT;
-			if (sum >= water)
-				return sum;
-
-			FastEstimateOpaqueTransparent2x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 0, sumO, sumT);
-			sum = (sumO <= sumT) ? sumO : sumT;
-			if (sum >= water)
-				return sum;
-
-			FastEstimateOpaqueTransparent2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 2, sumO, sumT);
-			sum = (sumO <= sumT) ? sumO : sumT;
-			if (sum >= water)
-				return sum;
-		}
-
-		sum4 = sum;
-
-		sum += Matrix[1][2]->FastEstimate2x2_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[1][2]->FastEstimate2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[2][1]->FastEstimate2x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[2][1]->FastEstimate2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 2);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[2][2]->FastEstimate2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 0);
-		if (sum >= water)
-			return sum;
-
-		sum9 = sum;
-
-		//
-
-		sum += Matrix[0][1]->FastEstimate2x1_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][1]->FastEstimate2x1_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 2);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][2]->FastEstimate2x1_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 0);
-		if (sum >= water)
-			return sum;
-
-		//
-
-		sum += Matrix[1][0]->FastEstimate1x2_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 3);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[1][0]->FastEstimate1x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 3);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[2][0]->FastEstimate1x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 3);
-		if (sum >= water)
-			return sum;
-
-		//
-
-		sum += Matrix[0][0]->FastEstimate1x1_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 3);
-		if (sum >= water)
-			return sum;
-
-		if (sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-		{
-			return sum;
-		}
-
-		sum = 0;
-
-		if (sum9 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-		{
-			sum = sum9;
-		}
-		else
-		{
-			if (sum4 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-			{
-				sum = sum4;
-			}
-			else
-			{
-				if (!IsEmpty)
-				{
-					int sumO = 0, sumT = 0;
-
-					PreciseEstimateOpaqueTransparent2x2_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 0, sumO, sumT);
-					PreciseEstimateOpaqueTransparent2x2_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 2, sumO, sumT);
-					PreciseEstimateOpaqueTransparent2x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 0, sumO, sumT);
-					PreciseEstimateOpaqueTransparent2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 2, sumO, sumT);
-
-					sum = (sumO <= sumT) ? sumO : sumT;
-					if (sum >= water)
-						return sum;
-				}
-			}
-
-			sum += Matrix[1][2]->PreciseEstimate2x2_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 0);
-			sum += Matrix[1][2]->PreciseEstimate2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 0);
-			sum += Matrix[2][1]->PreciseEstimate2x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 0);
-			sum += Matrix[2][1]->PreciseEstimate2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 2);
-			sum += Matrix[2][2]->PreciseEstimate2x2_GRB(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 0);
-			if (sum >= water)
-				return sum;
-		}
-
-		//
-
-		sum += Matrix[0][1]->PreciseEstimate2x1_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][1]->PreciseEstimate2x1_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 2);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][2]->PreciseEstimate2x1_GRB(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 0);
-		if (sum >= water)
-			return sum;
-
-		//
-
-		sum += Matrix[1][0]->PreciseEstimate1x2_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 3);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[1][0]->PreciseEstimate1x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 3);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[2][0]->PreciseEstimate1x2_GRB(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 3);
-		if (sum >= water)
-			return sum;
-
-		//
-
-		sum += Matrix[0][0]->PreciseEstimate1x1_GRB(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 3);
-		if (sum >= water)
-			return sum;
-
-		return sum;
-	}
-
-	//////////////////////
-	// Climber Test GRB //
-	//////////////////////
-
-	INLINED bool ClimberTest_GRB(__m128i& backup, int64_t& water)
-	{
-		int64_t error = Estimate7x7_GRB(water);
-		if (water > error)
-		{
-			water = error;
-			backup = Colors;
-			return true;
-		}
-		else
-		{
-			Colors = backup;
-			return false;
-		}
-	}
-
-	INLINED void ChangeColors_GRB(__m128i& backup, int64_t& water, int& changes, int mark, bool hasG, bool hasR, bool hasB, int group, int mask)
-	{
-		if ((changes != 0) || (mask < mark))
-		{
-			for (;; )
-			{
-				bool other = false;
-
-				if (hasG)
-				{
-					int c = M128I_I16(Colors, group + 1);
-					if (c > 0)
-					{
-						c = c - 1;
-						M128I_I16(Colors, group + 1) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasR)
-				{
-					int c = M128I_I16(Colors, group + 2);
-					if (c > 0)
-					{
-						c = c - 1;
-						M128I_I16(Colors, group + 2) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasB)
-				{
-					int c = M128I_I16(Colors, group + 3);
-					if (c > 0)
-					{
-						if (group == 0)
-							c = MakeColor4(c - 2);
-						else
-							c = c - 1;
-						M128I_I16(Colors, group + 3) = (short)c;
-						other = true;
-					}
-				}
-
-				if (!other)
-					break;
-
-				if (ClimberTest_GRB(backup, water)) changes = mask; else break;
-			}
-		}
-
-		if (((changes != 0) || (mask + mask < mark)) && (changes != mask))
-		{
-			for (;; )
-			{
-				bool other = false;
-
-				if (hasG)
-				{
-					int c = M128I_I16(Colors, group + 1);
-					if (c < 0x1F)
-					{
-						c = c + 1;
-						M128I_I16(Colors, group + 1) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasR)
-				{
-					int c = M128I_I16(Colors, group + 2);
-					if (c < 0x1F)
-					{
-						c = c + 1;
-						M128I_I16(Colors, group + 2) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasB)
-				{
-					int c = M128I_I16(Colors, group + 3);
-					if (c < 0x1F)
-					{
-						if (group == 0)
-							c = MakeColor4(c + 2);
-						else
-							c = c + 1;
-						M128I_I16(Colors, group + 3) = (short)c;
-						other = true;
-					}
-				}
-
-				if (!other)
-					break;
-
-				if (ClimberTest_GRB(backup, water)) changes = mask + mask; else break;
-			}
-		}
-	}
-
 	/////////////
 	// Climber //
 	/////////////
@@ -4030,101 +2882,81 @@ struct Block
 		if (water <= 0)
 			return;
 
-		bool check_alpha = true;
-		if (IsDense & (M128I_I16(Colors, 0) >= 0xF) & (M128I_I16(Colors, 4) >= 0xF))
-		{
-			if ((M128I_I16(Matrix[0][0]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[0][0]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[0][1]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[0][1]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[0][2]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[0][2]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[1][0]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[1][0]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[1][2]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[1][2]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[2][0]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[2][0]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[2][1]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[2][1]->Colors, 4) >= 0xF) &
-				(M128I_I16(Matrix[2][2]->Colors, 0) >= 0xF) & (M128I_I16(Matrix[2][2]->Colors, 4) >= 0xF))
-			{
-				check_alpha = false;
-			}
-		}
-
-		if (check_alpha)
-		{
-			water = Estimate7x7(water);
-		}
-		else
-		{
-			water = Estimate7x7_GRB(water);
-		}
+		water = Estimate7x7(water);
 		if (water <= 0)
 			return;
 
+		int64_t input_error = water;
+
 		__m128i backup = Colors; uint32_t backup1 = Data[1];
+
+		__m128i solution = backup;
 
 		int mark = 0x100000;
 
-		if (check_alpha)
+		bool solveA = true;
+		if (IsDense && ((M128I_I16(Colors, 0) & M128I_I16(Colors, 4)) == 0xF))
 		{
-			for (;; )
-			{
-				int changes = 0;
-
-				ChangeAlpha(backup, water, changes, mark, 0, 1);
-
-				int modeA = (M128I_I16(Colors, 0) >= 0xF);
-
-				ChangeColors(backup, water, changes, mark, modeA, true, true, true, 0, 4);
-				ChangeColors(backup, water, changes, mark, modeA, true, false, false, 0, 0x10);
-				ChangeColors(backup, water, changes, mark, modeA, false, true, false, 0, 0x40);
-				ChangeColors(backup, water, changes, mark, modeA, false, false, true, 0, 0x100);
-
-				//
-
-				ChangeAlpha(backup, water, changes, mark, 4, 0x400);
-
-				int modeB = (M128I_I16(Colors, 4) >= 0xF);
-
-				ChangeColors(backup, water, changes, mark, modeB, true, true, true, 4, 0x1000);
-				ChangeColors(backup, water, changes, mark, modeB, true, false, false, 4, 0x4000);
-				ChangeColors(backup, water, changes, mark, modeB, false, true, false, 4, 0x10000);
-				ChangeColors(backup, water, changes, mark, modeB, false, false, true, 4, 0x40000);
-
-				if (!changes)
-					break;
-
-				mark = changes;
-			}
+			solveA = false;
 		}
-		else
+
+		for (;; )
 		{
-			for (;; )
+			int changes = 0;
+
+			if (solveA)
 			{
-				int changes = 0;
-
-				ChangeColors_GRB(backup, water, changes, mark, true, true, true, 0, 4);
-				ChangeColors_GRB(backup, water, changes, mark, true, false, false, 0, 0x10);
-				ChangeColors_GRB(backup, water, changes, mark, false, true, false, 0, 0x40);
-				ChangeColors_GRB(backup, water, changes, mark, false, false, true, 0, 0x100);
-
-				//
-
-				ChangeColors_GRB(backup, water, changes, mark, true, true, true, 4, 0x1000);
-				ChangeColors_GRB(backup, water, changes, mark, true, false, false, 4, 0x4000);
-				ChangeColors_GRB(backup, water, changes, mark, false, true, false, 4, 0x10000);
-				ChangeColors_GRB(backup, water, changes, mark, false, false, true, 4, 0x40000);
-
-				if (!changes)
-					break;
-
-				mark = changes;
+				ChangeAlpha(solution, water, changes, mark, 0, 1);
 			}
+
+			int modeA = (M128I_I16(Colors, 0) == 0xF);
+
+			ChangeColors(solution, water, changes, mark, modeA, true, true, true, 0, 4);
+			ChangeColors(solution, water, changes, mark, modeA, true, false, false, 0, 0x10);
+			ChangeColors(solution, water, changes, mark, modeA, false, true, false, 0, 0x40);
+			ChangeColors(solution, water, changes, mark, modeA, false, false, true, 0, 0x100);
+
+			//
+
+			if (solveA)
+			{
+				ChangeAlpha(solution, water, changes, mark, 4, 0x400);
+			}
+
+			int modeB = (M128I_I16(Colors, 4) == 0xF);
+
+			ChangeColors(solution, water, changes, mark, modeB, true, true, true, 4, 0x1000);
+			ChangeColors(solution, water, changes, mark, modeB, true, false, false, 4, 0x4000);
+			ChangeColors(solution, water, changes, mark, modeB, false, true, false, 4, 0x10000);
+			ChangeColors(solution, water, changes, mark, modeB, false, false, true, 4, 0x40000);
+
+			if (!changes)
+				break;
+
+			mark = changes;
 		}
 
 		if (mark == 0x100000)
 		{
-			Data[1] = backup1;
+			Colors = backup; Data[1] = backup1;
 			return;
 		}
 
-		PackColors();
+		UpdateColors();
+
+		int diff = _mm_movemask_epi8(_mm_cmpeq_epi16(Colors, solution));
+		if (diff != 0xFFFF)
+		{
+			solution = backup;
+			water = input_error;
+
+			bool better = ClimberTest(solution, water);
+			if (!better)
+			{
+				Colors = backup; Data[1] = backup1;
+				return;
+			}
+		}
 
 		for (int y = 0; y < 3; y++)
 		{
@@ -4631,7 +3463,7 @@ struct Window1
 		if (!Matrix[1][1]->IsDense)
 		{
 			ReverseY();
-			Pick(current, 0, 0, 31); M128I_I16(current, 0) >>= 1;
+			Pick(current, 0, 0, 31); M128I_I16(current, 0) >>= 1; M128I_I16(current, 4) >>= 1;
 		}
 
 		Matrix[1][1]->Colors = current;
