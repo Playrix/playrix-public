@@ -1496,10 +1496,10 @@ static int CompressBlockAlphaEnhanced(uint8_t output[8], const uint8_t* __restri
 				break;
 		}
 
-		delta = (int)(~(uint32_t)delta) + ((delta < 0) ? 1 : 0);
+		delta = (int)(~(uint32_t)delta) + int(delta < 0);
 		if (((avg_alpha + delta) & ~0xFF) != 0)
 		{
-			delta = (int)(~(uint32_t)delta) + ((delta < 0) ? 1 : 0);
+			delta = (int)(~(uint32_t)delta) + int(delta < 0);
 			if (((avg_alpha + delta) & ~0xFF) != 0)
 				break;
 		}
@@ -1640,7 +1640,7 @@ static INLINED void DecompressBlockColorH(const uint8_t input[8], uint8_t* __res
 	b += (c >> 3) & 0xF;
 	a += (c >> 16) & 8;
 
-	d |= (a >= b) ? 1 : 0;
+	d |= int(a >= b);
 
 	b += b << 4;
 	a += a << 4;
@@ -2538,10 +2538,9 @@ static INLINED void SortNodes10(Node nodes[0x10 + 1], int water)
 	for (int i = 0; i < n; i++)
 	{
 		Node temp = nodes[i];
-		if (temp.Error < water)
-		{
-			nodes[w++] = temp;
-		}
+		nodes[w] = temp;
+
+		w += int(temp.Error < water);
 	}
 
 	nodes[0x10].Color = w;
@@ -2610,10 +2609,9 @@ static INLINED void SortNodes20(Node nodes[0x20 + 1], int water)
 	for (int i = 0; i < n; i++)
 	{
 		Node temp = nodes[i];
-		if (temp.Error < water)
-		{
-			nodes[w++] = temp;
-		}
+		nodes[w] = temp;
+
+		w += int(temp.Error < water);
 	}
 
 	nodes[0x20].Color = w;
@@ -2794,10 +2792,9 @@ static INLINED int Sort100(Node A[0x101], int water)
 	for (int i = 0; i < n; i++)
 	{
 		Node temp = A[i];
-		if (temp.Error < water)
-		{
-			A[w++] = temp;
-		}
+		A[w] = temp;
+
+		w += int(temp.Error < water);
 	}
 
 	if (w <= 0x10)
@@ -4104,7 +4101,7 @@ static INLINED void FilterPixelsColor(Half& half, uint32_t order)
 
 		order >>= 4;
 
-		w += (a != 0) ? 1 : 0;
+		w += int(a != 0);
 	}
 
 	half.Count = (int)w;
@@ -5281,12 +5278,10 @@ static INLINED void FilterLevelsT(Node nodes[0x100 + 1], int aL, int aH)
 	for (int i = 0; i < n; i++)
 	{
 		Node temp = nodes[i];
+		nodes[w] = temp;
 
 		int a = temp.Color >> 4;
-		if ((aL <= a) && (a <= aH))
-		{
-			nodes[w++] = temp;
-		}
+		w += int(aL <= a) & int(a <= aH);
 	}
 
 	nodes[0x100].Color = w;
@@ -6687,7 +6682,7 @@ static INLINED void FilterPixelsColor16(Area& area, uint64_t order)
 
 		order >>= 4;
 
-		w += (a != 0) ? 1 : 0;
+		w += int(a != 0);
 	}
 
 	area.Count = (int)w;
@@ -7285,7 +7280,7 @@ static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int ra
 
 		for (int x = 0; x < src_w; x++)
 		{
-			w[x] = (r[x * 4] != 0) ? 1 : 0;
+			w[x] = uint8_t(r[x * 4] != 0);
 		}
 	}
 
@@ -7315,7 +7310,7 @@ static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int ra
 		{
 			int v = rH[a] - *rH + *rL - rL[a];
 
-			w[x * 4] = (v != 0) ? 1 : 0;
+			w[x * 4] = uint8_t(v != 0);
 		}
 	}
 

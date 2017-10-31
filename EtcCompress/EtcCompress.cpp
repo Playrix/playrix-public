@@ -1812,10 +1812,9 @@ static INLINED void SortNodes10(Node nodes[0x10 + 1], int water)
 	for (int i = 0; i < n; i++)
 	{
 		Node temp = nodes[i];
-		if (temp.Error < water)
-		{
-			nodes[w++] = temp;
-		}
+		nodes[w] = temp;
+
+		w += int(temp.Error < water);
 	}
 
 	nodes[0x10].Color = w;
@@ -1884,10 +1883,9 @@ static INLINED void SortNodes20(Node nodes[0x20 + 1], int water)
 	for (int i = 0; i < n; i++)
 	{
 		Node temp = nodes[i];
-		if (temp.Error < water)
-		{
-			nodes[w++] = temp;
-		}
+		nodes[w] = temp;
+
+		w += int(temp.Error < water);
 	}
 
 	nodes[0x20].Color = w;
@@ -3272,7 +3270,7 @@ static INLINED void FilterPixelsColor(Half& half, uint32_t order)
 
 		order >>= 4;
 
-		w += (a != 0) ? 1 : 0;
+		w += int(a != 0);
 	}
 
 	half.Count = (int)w;
@@ -3995,7 +3993,7 @@ static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int ra
 
 		for (int x = 0; x < src_w; x++)
 		{
-			w[x] = (r[x * 4] != 0) ? 1 : 0;
+			w[x] = uint8_t(r[x * 4] != 0);
 		}
 	}
 
@@ -4025,7 +4023,7 @@ static INLINED void OutlineAlpha(uint8_t* src_bgra, int src_w, int src_h, int ra
 		{
 			int v = rH[a] - *rH + *rL - rL[a];
 
-			w[x * 4] = (v != 0) ? 1 : 0;
+			w[x * 4] = uint8_t(v != 0);
 		}
 	}
 
