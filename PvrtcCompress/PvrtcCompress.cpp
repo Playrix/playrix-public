@@ -4078,7 +4078,7 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 	double water_psnr = 0;
 	int64_t water = 1LL << 62;
 
-	for (int step = 1; step <= 1000; step++)
+	for (int step = 1; step <= 500; step++)
 	{
 		int64_t error = 0;
 
@@ -4304,7 +4304,7 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 {
 	bool flip = true;
 	bool incremental = false;
-	int passes = 2;
+	int passes = 1;
 	int border = 1;
 
 	const char* src_name = nullptr;
