@@ -2885,12 +2885,10 @@ static INLINED int DifferentialColors3(int Id, uint32_t& flag, const Node node[0
 				continue;
 
 			int error = node[b].Error;
-			if (error < water)
-			{
-				diff[w].Error = error;
-				diff[w].Color = b;
-				w++;
-			}
+			diff[w].Error = error;
+			diff[w].Color = b;
+
+			w += int(error < water);
 		}
 
 		diff[8].Color = w;
@@ -3270,7 +3268,7 @@ static INLINED void FilterPixelsColor(Half& half, uint32_t order)
 
 		order >>= 4;
 
-		w += int(a != 0);
+		w += size_t(a != 0);
 	}
 
 	half.Count = (int)w;

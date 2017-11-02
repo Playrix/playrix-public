@@ -3806,12 +3806,10 @@ static INLINED int DifferentialColors3(int Id, uint32_t& flag, const Node node[0
 				continue;
 
 			int error = node[b].Error;
-			if (error < water)
-			{
-				diff[w].Error = error;
-				diff[w].Color = b;
-				w++;
-			}
+			diff[w].Error = error;
+			diff[w].Color = b;
+
+			w += int(error < water);
 		}
 
 		diff[8].Color = w;
@@ -4101,7 +4099,7 @@ static INLINED void FilterPixelsColor(Half& half, uint32_t order)
 
 		order >>= 4;
 
-		w += int(a != 0);
+		w += size_t(a != 0);
 	}
 
 	half.Count = (int)w;
@@ -6114,12 +6112,11 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 						for (int k = 4; --k >= 0; co += (1 << 1))
 						{
 							int err = PlanarPyramidO(surface, co);
-							if (err < best)
-							{
-								nodesO[w].Error = err;
-								nodesO[w].Color = co;
-								w++;
-							}
+
+							nodesO[w].Error = err;
+							nodesO[w].Color = co;
+
+							w += size_t(err < best);
 						}
 					}
 					else
@@ -6164,12 +6161,11 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 							for (int k = 4; --k >= 0; ch += (1 << 1))
 							{
 								int err = PlanarPyramidOH(surface, co, ch);
-								if (err < best)
-								{
-									nodesH[w].Error = err;
-									nodesH[w].Color = ch;
-									w++;
-								}
+
+								nodesH[w].Error = err;
+								nodesH[w].Color = ch;
+
+								w += size_t(err < best);
 							}
 						}
 						else
@@ -6204,12 +6200,11 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 							for (int k = 4; --k >= 0; cv += (1 << 1))
 							{
 								int err = PlanarPyramidOV(surface, co, cv);
-								if (err < best)
-								{
-									nodesV[w].Error = err;
-									nodesV[w].Color = cv;
-									w++;
-								}
+
+								nodesV[w].Error = err;
+								nodesV[w].Color = cv;
+
+								w += size_t(err < best);
 							}
 						}
 						else
@@ -6308,12 +6303,11 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 						for (int k = 4; --k >= 0; co += (1 << 2))
 						{
 							int err = PlanarPyramidO(surface, co);
-							if (err < best)
-							{
-								nodesO[w].Error = err;
-								nodesO[w].Color = co;
-								w++;
-							}
+
+							nodesO[w].Error = err;
+							nodesO[w].Color = co;
+
+							w += size_t(err < best);
 						}
 					}
 					else
@@ -6358,12 +6352,11 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 							for (int k = 4; --k >= 0; ch += (1 << 2))
 							{
 								int err = PlanarPyramidOH(surface, co, ch);
-								if (err < best)
-								{
-									nodesH[w].Error = err;
-									nodesH[w].Color = ch;
-									w++;
-								}
+
+								nodesH[w].Error = err;
+								nodesH[w].Color = ch;
+
+								w += size_t(err < best);
 							}
 						}
 						else
@@ -6398,12 +6391,11 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 							for (int k = 4; --k >= 0; cv += (1 << 2))
 							{
 								int err = PlanarPyramidOV(surface, co, cv);
-								if (err < best)
-								{
-									nodesV[w].Error = err;
-									nodesV[w].Color = cv;
-									w++;
-								}
+
+								nodesV[w].Error = err;
+								nodesV[w].Color = cv;
+
+								w += size_t(err < best);
 							}
 						}
 						else
@@ -6682,7 +6674,7 @@ static INLINED void FilterPixelsColor16(Area& area, uint64_t order)
 
 		order >>= 4;
 
-		w += int(a != 0);
+		w += size_t(a != 0);
 	}
 
 	area.Count = (int)w;
