@@ -54,11 +54,12 @@
 #define M128I_I32(mm, index) (reinterpret_cast<int32_t(&)[4]>(mm)[index])
 #endif
 
-typedef struct alignas(16) { int Data[8 * 4]; int Count, unused; uint8_t Shift[8]; } Half;
+typedef struct alignas(16) { int Data[8 * 4]; __m128i DataGRB[8], DataGR[8], DataGB[8]; int Count; uint8_t Color[4]; uint8_t Shift[8]; } Half;
 typedef struct alignas(16) { Half A, B; } Elem;
 
-typedef struct alignas(16) { int Data[16 * 4]; uint8_t Shift[16]; int Count, unused0, unused1, unused2; } Area;
-typedef struct alignas(16) { short Mask[16], U[16], V[16], Data[16]; } Surface;
+typedef struct alignas(16) { int Data[16 * 4]; __m128i DataGRB[16], DataGR[16], DataGB[16]; uint8_t Shift[16]; int Count, unused0, unused1, unused2; } Area;
+typedef struct alignas(16) { short Mask[16], U[16], V[16], Data[16]; uint8_t Data_U8[16]; } Surface;
+
 
 typedef struct alignas(8) { int Error, Color; } Node;
 
@@ -74,7 +75,7 @@ enum { kGreen = 1, kRed = 1, kBlue = 1 };
 
 #endif
 
-enum { kColor = kGreen + kRed + kBlue, kUnknownError = (255 * 255) * kColor * (4 * 4) + 1 };
+enum { kColor = kGreen + kRed + kBlue };
 
 alignas(16) static const int g_table[8][2] = { { 2, 8 },{ 5, 17 },{ 9, 29 },{ 13, 42 },{ 18, 60 },{ 24, 80 },{ 33, 106 },{ 47, 183 } };
 
@@ -133,13 +134,17 @@ alignas(16) static const int g_colors5[0x20] =
 
 static __m128i g_errors4[8][0x100][0x10 >> 2];
 static __m128i g_errors5[8][0x100][0x20 >> 2];
-static __m128i g_errorsH[8][0x100][0x100 >> 2];
-static __m128i g_errorsT[8][0x100][0x100 >> 2];
-static __m128i g_errorsA[0x100][0x100][0x100 >> 2];
 
-static __m128i g_stripesH[8][0x100][0x10 >> 2];
-static __m128i g_stripesT[8][0x100][0x10 >> 2];
-static __m128i g_stripesA[0x100][0x100][0x10 >> 2];
+static __m128i g_errors4_U16[8][0x100][0x10 >> 3];
+static __m128i g_errors5_U16[8][0x100][0x20 >> 3];
+static __m128i g_errorsH_U16[8][0x100][0x100 >> 3];
+static __m128i g_errorsT_U16[8][0x100][0x100 >> 3];
+static __m128i g_errorsA_U16[0x100][0x100][0x100 >> 3];
+
+static __m128i g_stripesH_U16[8][0x100][0x10 >> 3];
+static __m128i g_stripesT_U16[8][0x100][0x10 >> 3];
+static __m128i g_stripesA_U16[0x100][0x100][0x10 >> 3];
+
 
 static const double g_ssim_8k1L = (0.01 * 255 * 8) * (0.01 * 255 * 8);
 static const double g_ssim_8k2L = g_ssim_8k1L * 9;
@@ -194,15 +199,6 @@ static INLINED __m128i emu_cvtepu8_epi32(__m128i a)
 	return _mm_unpacklo_epi16(a, zero);
 }
 
-#undef _mm_cvtepi16_epi32
-#define _mm_cvtepi16_epi32 emu_cvtepi16_epi32
-
-static INLINED __m128i emu_cvtepi16_epi32(__m128i a)
-{
-	__m128i sign = _mm_cmpgt_epi16(_mm_setzero_si128(), a);
-	return _mm_unpacklo_epi16(a, sign);
-}
-
 #undef _mm_min_epi32
 #define _mm_min_epi32 emu_min_epi32
 
@@ -210,15 +206,6 @@ static INLINED __m128i emu_min_epi32(__m128i a, __m128i b)
 {
 	__m128i mask = _mm_cmplt_epi32(a, b);
 	return _mm_or_si128(_mm_and_si128(a, mask), _mm_andnot_si128(mask, b));
-}
-
-#undef _mm_min_epu16
-#define _mm_min_epu16 emu_min_epu16_7fff
-
-static INLINED __m128i emu_min_epu16_7fff(__m128i a, __m128i)
-{
-	__m128i sign = _mm_cmpgt_epi16(_mm_setzero_si128(), a);
-	return _mm_or_si128(_mm_andnot_si128(sign, a), _mm_srli_epi16(sign, 1));
 }
 
 #undef _mm_minpos_epu16
@@ -385,6 +372,100 @@ static void InitLevelErrors()
 		}
 	}
 
+	for (int q = 0; q < 8; q++)
+	{
+		int d = g_tableHT[q];
+
+		for (int i = 0; i < 0x100; i++)
+		{
+			int a = ((i >> 4) & 0xC) + ((i >> 2) & 3);
+			int b = ((i >> 2) & 0xC) + (i & 3);
+
+			int ca = ExpandColor4(a);
+			int cb = ExpandColor4(b);
+
+			int t0 = Min(ca + d, 255);
+			int t1 = Max(ca - d, 0);
+			int t2 = Min(cb + d, 255);
+			int t3 = Max(cb - d, 0);
+
+			for (int x = 0; x < 0x100; x++)
+			{
+				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
+
+				((uint16_t*)g_errorsH_U16[q][x])[i] = (uint16_t)(v * v);
+			}
+		}
+
+		for (int i = 0; i < 0x100; i++)
+		{
+			int a = ((i >> 4) & 0xC) + ((i >> 2) & 3);
+			int b = ((i >> 2) & 0xC) + (i & 3);
+
+			int ca = ExpandColor4(a);
+			int cb = ExpandColor4(b);
+
+			int t0 = ca;
+			int t1 = Min(cb + d, 255);
+			int t2 = cb;
+			int t3 = Max(cb - d, 0);
+
+			for (int x = 0; x < 0x100; x++)
+			{
+				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
+
+				((uint16_t*)g_errorsT_U16[q][x])[i] = (uint16_t)(v * v);
+			}
+		}
+	}
+
+	for (int q = 0; q < 8; q++)
+	{
+		for (int x = 0; x < 0x100; x++)
+		{
+			auto errors = (const uint16_t*)g_errorsH_U16[q][x];
+
+			for (size_t z = 0; z < 0x10; z++)
+			{
+				int v = *errors++;
+
+				for (int i = 1; i < 0x10; i++)
+				{
+					v = Min(v, *errors++);
+				}
+
+				((uint16_t*)g_stripesH_U16[q][x])[z] = (uint16_t)v;
+			}
+		}
+
+		for (int x = 0; x < 0x100; x++)
+		{
+			auto errors = (const uint16_t*)g_errorsT_U16[q][x];
+
+			for (size_t z = 0; z < 0x10; z++)
+			{
+				int v = *errors++;
+
+				for (int i = 1; i < 0x10; i++)
+				{
+					v = Min(v, *errors++);
+				}
+
+				((uint16_t*)g_stripesT_U16[q][x])[z] = (uint16_t)v;
+			}
+		}
+	}
+
+	for (size_t i = 0; i < sizeof(g_errors4) / sizeof(uint32_t); i++)
+	{
+		((uint16_t*)g_errors4_U16)[i] = (uint16_t)((uint32_t*)g_errors4)[i];
+	}
+
+	for (size_t i = 0; i < sizeof(g_errors5) / sizeof(uint32_t); i++)
+	{
+		((uint16_t*)g_errors5_U16)[i] = (uint16_t)((uint32_t*)g_errors5)[i];
+	}
+
 	for (size_t q = 0x10; q < 0x100; q++)
 	{
 		__m128i mscale = _mm_shufflelo_epi16(_mm_cvtsi64_si128(q >> 4), 0);
@@ -414,7 +495,7 @@ static void InitLevelErrors()
 
 				__m128i mmin = _mm_minpos_epu16(m);
 
-				((int*)g_errorsA[alpha][x])[q] = (int)_mm_cvtsi128_si64(mmin) & 0xFFFF;
+				((uint16_t*)g_errorsA_U16[alpha][x])[q] = (uint16_t)((int)_mm_cvtsi128_si64(mmin) & 0xFFFF);
 			}
 		}
 	}
@@ -423,7 +504,7 @@ static void InitLevelErrors()
 	{
 		for (size_t x = 0; x < 0x100; x++)
 		{
-			auto errors = (const int*)g_errorsA[alpha][x] + 0x10;
+			auto errors = (const uint16_t*)g_errorsA_U16[alpha][x] + 0x10;
 
 			for (size_t scale = 1; scale < 0x10; scale++)
 			{
@@ -434,91 +515,7 @@ static void InitLevelErrors()
 					v = Min(v, *errors++);
 				}
 
-				((int*)g_stripesA[alpha][x])[scale] = v;
-			}
-		}
-	}
-
-	for (int q = 0; q < 8; q++)
-	{
-		int d = g_tableHT[q];
-
-		for (int i = 0; i < 0x100; i++)
-		{
-			int a = ((i >> 4) & 0xC) + ((i >> 2) & 3);
-			int b = ((i >> 2) & 0xC) + (i & 3);
-
-			int ca = ExpandColor4(a);
-			int cb = ExpandColor4(b);
-
-			int t0 = Min(ca + d, 255);
-			int t1 = Max(ca - d, 0);
-			int t2 = Min(cb + d, 255);
-			int t3 = Max(cb - d, 0);
-
-			for (int x = 0; x < 0x100; x++)
-			{
-				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
-
-				((int*)g_errorsH[q][x])[i] = v * v;
-			}
-		}
-
-		for (int i = 0; i < 0x100; i++)
-		{
-			int a = ((i >> 4) & 0xC) + ((i >> 2) & 3);
-			int b = ((i >> 2) & 0xC) + (i & 3);
-
-			int ca = ExpandColor4(a);
-			int cb = ExpandColor4(b);
-
-			int t0 = ca;
-			int t1 = Min(cb + d, 255);
-			int t2 = cb;
-			int t3 = Max(cb - d, 0);
-
-			for (int x = 0; x < 0x100; x++)
-			{
-				int v = Min(Min(abs(x - t0), abs(x - t1)), Min(abs(x - t2), abs(x - t3)));
-
-				((int*)g_errorsT[q][x])[i] = v * v;
-			}
-		}
-	}
-
-	for (int q = 0; q < 8; q++)
-	{
-		for (int x = 0; x < 0x100; x++)
-		{
-			auto errors = (const int*)g_errorsH[q][x];
-
-			for (size_t z = 0; z < 0x10; z++)
-			{
-				int v = *errors++;
-
-				for (int i = 1; i < 0x10; i++)
-				{
-					v = Min(v, *errors++);
-				}
-
-				((int*)g_stripesH[q][x])[z] = v;
-			}
-		}
-
-		for (int x = 0; x < 0x100; x++)
-		{
-			auto errors = (const int*)g_errorsT[q][x];
-
-			for (size_t z = 0; z < 0x10; z++)
-			{
-				int v = *errors++;
-
-				for (int i = 1; i < 0x10; i++)
-				{
-					v = Min(v, *errors++);
-				}
-
-				((int*)g_stripesT[q][x])[z] = v;
+				((uint16_t*)g_stripesA_U16[alpha][x])[scale] = (uint16_t)v;
 			}
 		}
 	}
@@ -526,98 +523,157 @@ static void InitLevelErrors()
 
 static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10 + 1], int weight, int water, int q)
 {
-#define PROCESS_PIXEL(index) \
-	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
-		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
-		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
-		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
-		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
-	} \
-
-#ifndef OPTION_LINEAR
-
-#define STORE_QUAD(index) \
-	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
-	{ \
-		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
-	 	level = _mm_min_epi32(level, sum); \
-		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
-		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
-		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
-		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
-		w += 4; \
-	} \
-
-#else
-
-#define STORE_QUAD(index) \
-	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
-	{ \
-		__m128i sum = _mm_min_epi32(sum##index, mtop); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
-	 	level = _mm_min_epi32(level, sum); \
-		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
-		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
-		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
-		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
-		w += 4; \
-	} \
-
-#endif
-
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
 	__m128i sum2 = _mm_setzero_si128();
 	__m128i sum3 = _mm_setzero_si128();
 
-	auto errors = g_errors4[q];
+	if (water <= 0xFFFF * weight)
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors_U16[(size_t)(uint32_t)half.Data[j + (index)]]; \
+			sum0 = _mm_adds_epu16(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_adds_epu16(sum1, _mm_load_si128(p + 1)); \
+		} \
 
-	int k = half.Count; size_t j = offset;
-	if (k & 8)
-	{
-		PROCESS_PIXEL(0);
-		PROCESS_PIXEL(4);
-		PROCESS_PIXEL(8);
-		PROCESS_PIXEL(12);
-		PROCESS_PIXEL(16);
-		PROCESS_PIXEL(20);
-		PROCESS_PIXEL(24);
-		PROCESS_PIXEL(28);
-	}
-	else
-	{
-		if (k & 4)
+		auto errors_U16 = g_errors4_U16[q];
+
+		int k = half.Count; size_t j = offset;
+		if (k & 8)
 		{
 			PROCESS_PIXEL(0);
 			PROCESS_PIXEL(4);
 			PROCESS_PIXEL(8);
 			PROCESS_PIXEL(12);
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
+		}
+		else
+		{
+			if (k & 4)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
 
-			j += 16;
+				j += 16;
+			}
+
+			if (k & 2)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+
+				j += 8;
+			}
+
+			if (k & 1)
+			{
+				PROCESS_PIXEL(0);
+			}
 		}
 
-		if (k & 2)
+		__m128i zero = _mm_setzero_si128();
+
+		sum3 = _mm_unpackhi_epi16(sum1, zero);
+		sum2 = _mm_unpacklo_epi16(sum1, zero);
+		sum1 = _mm_unpackhi_epi16(sum0, zero);
+		sum0 = _mm_unpacklo_epi16(sum0, zero);
+
+#undef PROCESS_PIXEL
+	}
+	else
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
+			sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
+			sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
+			sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+		} \
+
+		auto errors = g_errors4[q];
+
+		int k = half.Count; size_t j = offset;
+		if (k & 8)
 		{
 			PROCESS_PIXEL(0);
 			PROCESS_PIXEL(4);
-
-			j += 8;
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
 		}
-
-		if (k & 1)
+		else
 		{
-			PROCESS_PIXEL(0);
+			if (k & 4)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
+
+				j += 16;
+			}
+
+			if (k & 2)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+
+				j += 8;
+			}
+
+			if (k & 1)
+			{
+				PROCESS_PIXEL(0);
+			}
 		}
+
+#undef PROCESS_PIXEL
 	}
 
 #ifndef OPTION_LINEAR
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_mullo_epi32(sum##index, mweight); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
 	int top = (water + weight - 1) / weight;
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
-	__m128i level = _mm_mullo_epi32(mtop, mweight);
+	__m128i level = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
 #else
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = sum##index; \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors4[(index) * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
 	(void)weight;
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
 	__m128i level = mtop;
@@ -633,57 +689,11 @@ static INLINED void GuessLevels(const Half& half, size_t offset, Node nodes[0x10
 	nodes[0x10].Error = _mm_cvtsi128_si32(HorizontalMinimum4(level));
 	nodes[0x10].Color = (int)w;
 
-#undef PROCESS_PIXEL
 #undef STORE_QUAD
 }
 
 static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x20 + 1], int weight, int water, int q)
 {
-#define PROCESS_PIXEL(index) \
-	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
-		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
-		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
-		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
-		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
-		sum4 = _mm_add_epi32(sum4, _mm_load_si128(p + 4)); \
-		sum5 = _mm_add_epi32(sum5, _mm_load_si128(p + 5)); \
-		sum6 = _mm_add_epi32(sum6, _mm_load_si128(p + 6)); \
-		sum7 = _mm_add_epi32(sum7, _mm_load_si128(p + 7)); \
-	} \
-
-#ifndef OPTION_LINEAR
-
-#define STORE_QUAD(index) \
-	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
-	{ \
-		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
-	 	level = _mm_min_epi32(level, sum); \
-		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
-		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
-		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
-		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
-		w += 4; \
-	} \
-
-#else
-
-#define STORE_QUAD(index) \
-	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
-	{ \
-		__m128i sum = _mm_min_epi32(sum##index, mtop); \
-		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
-	 	level = _mm_min_epi32(level, sum); \
-		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
-		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
-		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
-		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
-		w += 4; \
-	} \
-
-#endif
-
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
 	__m128i sum2 = _mm_setzero_si128();
@@ -693,52 +703,162 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 	__m128i sum6 = _mm_setzero_si128();
 	__m128i sum7 = _mm_setzero_si128();
 
-	auto errors = g_errors5[q];
+	if (water <= 0xFFFF * weight)
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors_U16[(size_t)(uint32_t)half.Data[j + (index)]]; \
+			sum0 = _mm_adds_epu16(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_adds_epu16(sum1, _mm_load_si128(p + 1)); \
+			sum2 = _mm_adds_epu16(sum2, _mm_load_si128(p + 2)); \
+			sum3 = _mm_adds_epu16(sum3, _mm_load_si128(p + 3)); \
+		} \
 
-	int k = half.Count; size_t j = offset;
-	if (k & 8)
-	{
-		PROCESS_PIXEL(0);
-		PROCESS_PIXEL(4);
-		PROCESS_PIXEL(8);
-		PROCESS_PIXEL(12);
-		PROCESS_PIXEL(16);
-		PROCESS_PIXEL(20);
-		PROCESS_PIXEL(24);
-		PROCESS_PIXEL(28);
-	}
-	else
-	{
-		if (k & 4)
+		auto errors_U16 = g_errors5_U16[q];
+
+		int k = half.Count; size_t j = offset;
+		if (k & 8)
 		{
 			PROCESS_PIXEL(0);
 			PROCESS_PIXEL(4);
 			PROCESS_PIXEL(8);
 			PROCESS_PIXEL(12);
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
+		}
+		else
+		{
+			if (k & 4)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
 
-			j += 16;
+				j += 16;
+			}
+
+			if (k & 2)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+
+				j += 8;
+			}
+
+			if (k & 1)
+			{
+				PROCESS_PIXEL(0);
+			}
 		}
 
-		if (k & 2)
+		__m128i zero = _mm_setzero_si128();
+
+		sum7 = _mm_unpackhi_epi16(sum3, zero);
+		sum6 = _mm_unpacklo_epi16(sum3, zero);
+		sum5 = _mm_unpackhi_epi16(sum2, zero);
+		sum4 = _mm_unpacklo_epi16(sum2, zero);
+		sum3 = _mm_unpackhi_epi16(sum1, zero);
+		sum2 = _mm_unpacklo_epi16(sum1, zero);
+		sum1 = _mm_unpackhi_epi16(sum0, zero);
+		sum0 = _mm_unpacklo_epi16(sum0, zero);
+
+#undef PROCESS_PIXEL
+	}
+	else
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors[(size_t)(uint32_t)half.Data[j + (index)]]; \
+			sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
+			sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
+			sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+			sum4 = _mm_add_epi32(sum4, _mm_load_si128(p + 4)); \
+			sum5 = _mm_add_epi32(sum5, _mm_load_si128(p + 5)); \
+			sum6 = _mm_add_epi32(sum6, _mm_load_si128(p + 6)); \
+			sum7 = _mm_add_epi32(sum7, _mm_load_si128(p + 7)); \
+		} \
+
+		auto errors = g_errors5[q];
+
+		int k = half.Count; size_t j = offset;
+		if (k & 8)
 		{
 			PROCESS_PIXEL(0);
 			PROCESS_PIXEL(4);
-
-			j += 8;
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
 		}
-
-		if (k & 1)
+		else
 		{
-			PROCESS_PIXEL(0);
+			if (k & 4)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
+
+				j += 16;
+			}
+
+			if (k & 2)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+
+				j += 8;
+			}
+
+			if (k & 1)
+			{
+				PROCESS_PIXEL(0);
+			}
 		}
+
+#undef PROCESS_PIXEL
 	}
 
 #ifndef OPTION_LINEAR
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = _mm_mullo_epi32(sum##index, mweight); \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
 	int top = (water + weight - 1) / weight;
 	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi32_si128(weight), 0);
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(top), 0);
-	__m128i level = _mm_mullo_epi32(mtop, mweight);
+	__m128i level = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
 #else
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = sum##index; \
+		__m128i mc = _mm_load_si128((__m128i*)&g_colors5[(index) * 4]); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+
 	(void)weight;
 	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
 	__m128i level = mtop;
@@ -758,176 +878,24 @@ static INLINED void AdjustLevels(const Half& half, size_t offset, Node nodes[0x2
 	nodes[0x20].Error = _mm_cvtsi128_si32(HorizontalMinimum4(level));
 	nodes[0x20].Color = (int)w;
 
-#undef PROCESS_PIXEL
 #undef STORE_QUAD
 }
 
-static INLINED void CombineStripes(const Area& area, size_t offset, int chunks[0x10], const __m128i(*stripes)[4], int weight)
+static INLINED void CombineStripes(const Area& area, size_t offset, int chunks[0x10], const __m128i(*stripes_U16)[2], int weight, int water)
 {
-#define PROCESS_PIXEL(index) \
-	{ \
-		const __m128i* p = stripes[(size_t)(uint32_t)area.Data[j + (index)]]; \
-		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
-		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
-		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
-		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
-	} \
-
-#ifndef OPTION_LINEAR
-
-#define STORE_QUAD(index) \
-	_mm_store_si128((__m128i*)&chunks[(index) << 2], _mm_mullo_epi32(sum##index, mweight)); \
-
-	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
-#else
-
-#define STORE_QUAD(index) \
-	_mm_store_si128((__m128i*)&chunks[(index) << 2], sum##index); \
-
-	(void)weight;
-#endif
-
 	__m128i sum0 = _mm_setzero_si128();
 	__m128i sum1 = _mm_setzero_si128();
 	__m128i sum2 = _mm_setzero_si128();
 	__m128i sum3 = _mm_setzero_si128();
 
-	int k = area.Count; size_t j = offset;
-	if (k & 16)
+	if (water <= 0xFFFF * weight)
 	{
-		PROCESS_PIXEL(0);
-		PROCESS_PIXEL(4);
-		PROCESS_PIXEL(8);
-		PROCESS_PIXEL(12);
-		PROCESS_PIXEL(16);
-		PROCESS_PIXEL(20);
-		PROCESS_PIXEL(24);
-		PROCESS_PIXEL(28);
-
-		PROCESS_PIXEL(32);
-		PROCESS_PIXEL(36);
-		PROCESS_PIXEL(40);
-		PROCESS_PIXEL(44);
-		PROCESS_PIXEL(48);
-		PROCESS_PIXEL(52);
-		PROCESS_PIXEL(56);
-		PROCESS_PIXEL(60);
-	}
-	else
-	{
-		if (k & 8)
-		{
-			PROCESS_PIXEL(0);
-			PROCESS_PIXEL(4);
-			PROCESS_PIXEL(8);
-			PROCESS_PIXEL(12);
-			PROCESS_PIXEL(16);
-			PROCESS_PIXEL(20);
-			PROCESS_PIXEL(24);
-			PROCESS_PIXEL(28);
-
-			j += 32;
-		}
-
-		if (k & 4)
-		{
-			PROCESS_PIXEL(0);
-			PROCESS_PIXEL(4);
-			PROCESS_PIXEL(8);
-			PROCESS_PIXEL(12);
-
-			j += 16;
-		}
-
-		if (k & 2)
-		{
-			PROCESS_PIXEL(0);
-			PROCESS_PIXEL(4);
-
-			j += 8;
-		}
-
-		if (k & 1)
-		{
-			PROCESS_PIXEL(0);
-		}
-	}
-
-	STORE_QUAD(0);
-	STORE_QUAD(1);
-	STORE_QUAD(2);
-	STORE_QUAD(3);
-
-#undef PROCESS_PIXEL
-#undef STORE_QUAD
-}
-
-static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x100 + 1], const __m128i(*errors)[64], const int chunks[0x10], int weight, int water)
-{
 #define PROCESS_PIXEL(index) \
-	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)area.Data[j + (index)]]; \
-		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
-		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
-		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
-		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
-	} \
-
-#ifndef OPTION_LINEAR
-
-#define STORE_QUAD(index) \
-	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
-	{ \
-		__m128i sum = _mm_mullo_epi32(_mm_min_epi32(sum##index, mtop), mweight); \
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi64_si128(colors)); \
-	 	level = _mm_min_epi32(level, sum); \
-		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
-		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
-		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
-		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
-		w += 4; \
-	} \
-	colors += 0x10101010; \
-
-	int top = (water + weight - 1) / weight;
-	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
-	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)top), 0);
-	__m128i level = _mm_mullo_epi32(mtop, mweight);
-#else
-
-#define STORE_QUAD(index) \
-	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
-	{ \
-		__m128i sum = _mm_min_epi32(sum##index, mtop); \
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi64_si128(colors)); \
-	 	level = _mm_min_epi32(level, sum); \
-		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
-		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
-		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
-		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
-		w += 4; \
-	} \
-	colors += 0x10101010; \
-
-	(void)weight;
-	__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
-	__m128i level = mtop;
-#endif
-
-	size_t w = 0;
-
-	for (int z = 0; z < 0x10; z++)
-	{
-		if (chunks[z] >= water)
-		{
-			errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
-			continue;
-		}
-
-		__m128i sum0 = _mm_setzero_si128();
-		__m128i sum1 = _mm_setzero_si128();
-		__m128i sum2 = _mm_setzero_si128();
-		__m128i sum3 = _mm_setzero_si128();
+		{ \
+			const __m128i* p = stripes_U16[(size_t)(uint32_t)area.Data[j + (index)]]; \
+			sum0 = _mm_adds_epu16(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_adds_epu16(sum1, _mm_load_si128(p + 1)); \
+		} \
 
 		int k = area.Count; size_t j = offset;
 		if (k & 16)
@@ -940,12 +908,6 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 			PROCESS_PIXEL(20);
 			PROCESS_PIXEL(24);
 			PROCESS_PIXEL(28);
-
-			if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			{
-				errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
-				continue;
-			}
 
 			PROCESS_PIXEL(32);
 			PROCESS_PIXEL(36);
@@ -996,149 +958,669 @@ static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x
 			}
 		}
 
-		size_t colors = uint32_t(((z << 4) & 0xC0) + ((z << 2) & 0xC)) * 0x01010101u + 0x03020100u;
+		__m128i zero = _mm_setzero_si128();
 
-		STORE_QUAD(0);
-		STORE_QUAD(1);
-		STORE_QUAD(2);
-		STORE_QUAD(3);
-
-		errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
-	}
-
-	nodes[0x100].Error = (int)_mm_cvtsi128_si64(HorizontalMinimum4(level));
-	nodes[0x100].Color = (int)w;
+		sum3 = _mm_unpackhi_epi16(sum1, zero);
+		sum2 = _mm_unpacklo_epi16(sum1, zero);
+		sum1 = _mm_unpackhi_epi16(sum0, zero);
+		sum0 = _mm_unpacklo_epi16(sum0, zero);
 
 #undef PROCESS_PIXEL
-#undef STORE_QUAD
-}
-
-static INLINED void AlphaStripes(const Area& area, int chunks[0x10], const __m128i(*stripes)[4])
-{
+	}
+	else
+	{
 #define PROCESS_PIXEL(index) \
-	{ \
-		const __m128i* p = stripes[(size_t)(uint32_t)area.Data[index]]; \
-		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
-		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
-		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
-		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
-	} \
+		{ \
+			const __m128i* p = stripes_U16[(size_t)(uint32_t)area.Data[j + (index)]]; \
+			__m128i add10 = _mm_load_si128(p + 0); \
+			__m128i add32 = _mm_load_si128(p + 1); \
+			sum0 = _mm_add_epi32(sum0, _mm_unpacklo_epi16(add10, zero)); \
+			sum1 = _mm_add_epi32(sum1, _mm_unpackhi_epi16(add10, zero)); \
+			sum2 = _mm_add_epi32(sum2, _mm_unpacklo_epi16(add32, zero)); \
+			sum3 = _mm_add_epi32(sum3, _mm_unpackhi_epi16(add32, zero)); \
+		} \
+
+		__m128i zero = _mm_setzero_si128();
+
+		int k = area.Count; size_t j = offset;
+		if (k & 16)
+		{
+			PROCESS_PIXEL(0);
+			PROCESS_PIXEL(4);
+			PROCESS_PIXEL(8);
+			PROCESS_PIXEL(12);
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
+
+			PROCESS_PIXEL(32);
+			PROCESS_PIXEL(36);
+			PROCESS_PIXEL(40);
+			PROCESS_PIXEL(44);
+			PROCESS_PIXEL(48);
+			PROCESS_PIXEL(52);
+			PROCESS_PIXEL(56);
+			PROCESS_PIXEL(60);
+		}
+		else
+		{
+			if (k & 8)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
+				PROCESS_PIXEL(16);
+				PROCESS_PIXEL(20);
+				PROCESS_PIXEL(24);
+				PROCESS_PIXEL(28);
+
+				j += 32;
+			}
+
+			if (k & 4)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
+
+				j += 16;
+			}
+
+			if (k & 2)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+
+				j += 8;
+			}
+
+			if (k & 1)
+			{
+				PROCESS_PIXEL(0);
+			}
+		}
+
+#undef PROCESS_PIXEL
+	}
+
+#ifndef OPTION_LINEAR
+
+#define STORE_QUAD(index) \
+	_mm_store_si128((__m128i*)&chunks[(index) << 2], _mm_mullo_epi32(sum##index, mweight)); \
+
+	__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
+#else
 
 #define STORE_QUAD(index) \
 	_mm_store_si128((__m128i*)&chunks[(index) << 2], sum##index); \
 
-	__m128i sum0 = _mm_setzero_si128();
-	__m128i sum1 = _mm_setzero_si128();
-	__m128i sum2 = _mm_setzero_si128();
-	__m128i sum3 = _mm_setzero_si128();
-
-	PROCESS_PIXEL(0);
-	PROCESS_PIXEL(4);
-	PROCESS_PIXEL(8);
-	PROCESS_PIXEL(12);
-	PROCESS_PIXEL(16);
-	PROCESS_PIXEL(20);
-	PROCESS_PIXEL(24);
-	PROCESS_PIXEL(28);
-
-	PROCESS_PIXEL(32);
-	PROCESS_PIXEL(36);
-	PROCESS_PIXEL(40);
-	PROCESS_PIXEL(44);
-	PROCESS_PIXEL(48);
-	PROCESS_PIXEL(52);
-	PROCESS_PIXEL(56);
-	PROCESS_PIXEL(60);
+	(void)weight;
+#endif
 
 	STORE_QUAD(0);
 	STORE_QUAD(1);
 	STORE_QUAD(2);
 	STORE_QUAD(3);
 
-#undef PROCESS_PIXEL
 #undef STORE_QUAD
 }
 
-static INLINED int AlphaLevels(const Area& area, const __m128i(*errors)[64], const int chunks[0x10], int water, int& last_q_way)
+static INLINED void CombineLevels(const Area& area, size_t offset, Node nodes[0x100 + 1], const __m128i(*errors_U16)[32], const int chunks[0x10], int weight, int water)
 {
-#define PROCESS_PIXEL(index) \
+#ifndef OPTION_LINEAR
+
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
 	{ \
-		const __m128i* p = errors[(size_t)(uint32_t)area.Data[index]]; \
-		sum0 = _mm_add_epi32(sum0, _mm_load_si128(p + 0)); \
-		sum1 = _mm_add_epi32(sum1, _mm_load_si128(p + 1)); \
-		sum2 = _mm_add_epi32(sum2, _mm_load_si128(p + 2)); \
-		sum3 = _mm_add_epi32(sum3, _mm_load_si128(p + 3)); \
+		__m128i sum = _mm_mullo_epi32(sum##index, mweight); \
+		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi64_si128(colors)); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
 	} \
+	colors += 0x10101010; \
 
-	__m128i best = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)water), 0);
+#else
 
-	for (int q = 0x10 << 16; !(q & (0x100 << 16)); q += 0x10 << 16)
+#define STORE_QUAD(index) \
+	if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, sum##index)) != 0) \
+	{ \
+		__m128i sum = sum##index; \
+		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi64_si128(colors)); \
+	 	level = _mm_min_epi32(level, sum); \
+		__m128i mL = _mm_unpacklo_epi32(sum, mc); \
+		__m128i mH = _mm_unpackhi_epi32(sum, mc); \
+		_mm_store_si128((__m128i*)&nodes[w + 0], mL); \
+		_mm_store_si128((__m128i*)&nodes[w + 2], mH); \
+		w += 4; \
+	} \
+	colors += 0x10101010; \
+
+#endif
+
+	if (water <= 0xFFFF * weight)
 	{
-		errors = (const __m128i(*)[64])((const __m128i*)errors + 4);
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors_U16[(size_t)(uint32_t)area.Data[j + (index)]]; \
+			sum0 = _mm_adds_epu16(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_adds_epu16(sum1, _mm_load_si128(p + 1)); \
+		} \
 
-		if (chunks[q >> (16 + 4)] >= water)
-			continue;
+#ifndef OPTION_LINEAR
+		int top = (water + weight - 1) / weight;
+		__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
+		__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)top), 0);
+		__m128i level = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)water), 0);
+#else
+		(void)weight;
+		__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
+		__m128i level = mtop;
+#endif
 
-		__m128i sum0 = _mm_setzero_si128();
-		__m128i sum1 = _mm_setzero_si128();
-		__m128i sum2 = _mm_setzero_si128();
-		__m128i sum3 = _mm_setzero_si128();
+		__m128i zero = _mm_setzero_si128();
+
+		size_t w = 0;
+
+		for (int z = 0; z < 0x10; z++)
+		{
+			if (chunks[z] >= water)
+			{
+				errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+				continue;
+			}
+
+			__m128i sum0 = zero;
+			__m128i sum1 = zero;
+
+			int k = area.Count; size_t j = offset;
+			if (k & 16)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
+				PROCESS_PIXEL(16);
+				PROCESS_PIXEL(20);
+				PROCESS_PIXEL(24);
+				PROCESS_PIXEL(28);
+
+				__m128i m0 = _mm_min_epi32(_mm_unpacklo_epi16(sum0, zero), _mm_unpackhi_epi16(sum0, zero));
+				__m128i m1 = _mm_min_epi32(_mm_unpacklo_epi16(sum1, zero), _mm_unpackhi_epi16(sum1, zero));
+				if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, _mm_min_epi32(m0, m1))) == 0)
+				{
+					errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+					continue;
+				}
+
+				PROCESS_PIXEL(32);
+				PROCESS_PIXEL(36);
+				PROCESS_PIXEL(40);
+				PROCESS_PIXEL(44);
+				PROCESS_PIXEL(48);
+				PROCESS_PIXEL(52);
+				PROCESS_PIXEL(56);
+				PROCESS_PIXEL(60);
+			}
+			else
+			{
+				if (k & 8)
+				{
+					PROCESS_PIXEL(0);
+					PROCESS_PIXEL(4);
+					PROCESS_PIXEL(8);
+					PROCESS_PIXEL(12);
+					PROCESS_PIXEL(16);
+					PROCESS_PIXEL(20);
+					PROCESS_PIXEL(24);
+					PROCESS_PIXEL(28);
+
+					j += 32;
+				}
+
+				if (k & 4)
+				{
+					PROCESS_PIXEL(0);
+					PROCESS_PIXEL(4);
+					PROCESS_PIXEL(8);
+					PROCESS_PIXEL(12);
+
+					j += 16;
+				}
+
+				if (k & 2)
+				{
+					PROCESS_PIXEL(0);
+					PROCESS_PIXEL(4);
+
+					j += 8;
+				}
+
+				if (k & 1)
+				{
+					PROCESS_PIXEL(0);
+				}
+			}
+
+			__m128i sum3 = _mm_unpackhi_epi16(sum1, zero);
+			__m128i sum2 = _mm_unpacklo_epi16(sum1, zero);
+			sum1 = _mm_unpackhi_epi16(sum0, zero);
+			sum0 = _mm_unpacklo_epi16(sum0, zero);
+
+			size_t colors = uint32_t(((z << 4) & 0xC0) + ((z << 2) & 0xC)) * 0x01010101u + 0x03020100u;
+
+			STORE_QUAD(0);
+			STORE_QUAD(1);
+			STORE_QUAD(2);
+			STORE_QUAD(3);
+
+			errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+		}
+
+		nodes[0x100].Error = (int)_mm_cvtsi128_si64(HorizontalMinimum4(level));
+		nodes[0x100].Color = (int)w;
+
+#undef PROCESS_PIXEL
+	}
+	else
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors_U16[(size_t)(uint32_t)area.Data[j + (index)]]; \
+			__m128i add10 = _mm_load_si128(p + 0); \
+			__m128i add32 = _mm_load_si128(p + 1); \
+			sum0 = _mm_add_epi32(sum0, _mm_unpacklo_epi16(add10, zero)); \
+			sum1 = _mm_add_epi32(sum1, _mm_unpackhi_epi16(add10, zero)); \
+			sum2 = _mm_add_epi32(sum2, _mm_unpacklo_epi16(add32, zero)); \
+			sum3 = _mm_add_epi32(sum3, _mm_unpackhi_epi16(add32, zero)); \
+		} \
+
+#ifndef OPTION_LINEAR
+		int top = (water + weight - 1) / weight;
+		__m128i mweight = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)weight), 0);
+		__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)top), 0);
+		__m128i level = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)water), 0);
+#else
+		(void)weight;
+		__m128i mtop = _mm_shuffle_epi32(_mm_cvtsi32_si128(water), 0);
+		__m128i level = mtop;
+#endif
+
+		__m128i zero = _mm_setzero_si128();
+
+		size_t w = 0;
+
+		for (int z = 0; z < 0x10; z++)
+		{
+			if (chunks[z] >= water)
+			{
+				errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+				continue;
+			}
+
+			__m128i sum0 = _mm_setzero_si128();
+			__m128i sum1 = _mm_setzero_si128();
+			__m128i sum2 = _mm_setzero_si128();
+			__m128i sum3 = _mm_setzero_si128();
+
+			int k = area.Count; size_t j = offset;
+			if (k & 16)
+			{
+				PROCESS_PIXEL(0);
+				PROCESS_PIXEL(4);
+				PROCESS_PIXEL(8);
+				PROCESS_PIXEL(12);
+				PROCESS_PIXEL(16);
+				PROCESS_PIXEL(20);
+				PROCESS_PIXEL(24);
+				PROCESS_PIXEL(28);
+
+				if (_mm_movemask_epi8(_mm_cmpgt_epi32(mtop, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				{
+					errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+					continue;
+				}
+
+				PROCESS_PIXEL(32);
+				PROCESS_PIXEL(36);
+				PROCESS_PIXEL(40);
+				PROCESS_PIXEL(44);
+				PROCESS_PIXEL(48);
+				PROCESS_PIXEL(52);
+				PROCESS_PIXEL(56);
+				PROCESS_PIXEL(60);
+			}
+			else
+			{
+				if (k & 8)
+				{
+					PROCESS_PIXEL(0);
+					PROCESS_PIXEL(4);
+					PROCESS_PIXEL(8);
+					PROCESS_PIXEL(12);
+					PROCESS_PIXEL(16);
+					PROCESS_PIXEL(20);
+					PROCESS_PIXEL(24);
+					PROCESS_PIXEL(28);
+
+					j += 32;
+				}
+
+				if (k & 4)
+				{
+					PROCESS_PIXEL(0);
+					PROCESS_PIXEL(4);
+					PROCESS_PIXEL(8);
+					PROCESS_PIXEL(12);
+
+					j += 16;
+				}
+
+				if (k & 2)
+				{
+					PROCESS_PIXEL(0);
+					PROCESS_PIXEL(4);
+
+					j += 8;
+				}
+
+				if (k & 1)
+				{
+					PROCESS_PIXEL(0);
+				}
+			}
+
+			size_t colors = uint32_t(((z << 4) & 0xC0) + ((z << 2) & 0xC)) * 0x01010101u + 0x03020100u;
+
+			STORE_QUAD(0);
+			STORE_QUAD(1);
+			STORE_QUAD(2);
+			STORE_QUAD(3);
+
+			errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+		}
+
+		nodes[0x100].Error = (int)_mm_cvtsi128_si64(HorizontalMinimum4(level));
+		nodes[0x100].Color = (int)w;
+
+#undef PROCESS_PIXEL
+	}
+
+#undef STORE_QUAD
+}
+
+static INLINED void AlphaStripes(const Area& area, int chunks[0x10], const __m128i(*stripes_U16)[2], int water)
+{
+	__m128i sum0 = _mm_setzero_si128();
+	__m128i sum1 = _mm_setzero_si128();
+	__m128i sum2 = _mm_setzero_si128();
+	__m128i sum3 = _mm_setzero_si128();
+
+	if (water <= 0xFFFF)
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = stripes_U16[(size_t)(uint32_t)area.Data[index]]; \
+			sum0 = _mm_adds_epu16(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_adds_epu16(sum1, _mm_load_si128(p + 1)); \
+		} \
 
 		PROCESS_PIXEL(0);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 		PROCESS_PIXEL(4);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 		PROCESS_PIXEL(8);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 		PROCESS_PIXEL(12);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
-
 		PROCESS_PIXEL(16);
 		PROCESS_PIXEL(20);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 		PROCESS_PIXEL(24);
 		PROCESS_PIXEL(28);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 
 		PROCESS_PIXEL(32);
 		PROCESS_PIXEL(36);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 		PROCESS_PIXEL(40);
 		PROCESS_PIXEL(44);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
-
 		PROCESS_PIXEL(48);
 		PROCESS_PIXEL(52);
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
-			continue;
 		PROCESS_PIXEL(56);
 		PROCESS_PIXEL(60);
-		__m128i cur = _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3));
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, cur)) == 0)
-			continue;
 
-		best = HorizontalMinimum4(cur);
+		__m128i zero = _mm_setzero_si128();
 
-		__m128i m10 = _mm_packs_epi16(_mm_cmpeq_epi32(sum0, best), _mm_cmpeq_epi32(sum1, best));
-		__m128i m32 = _mm_packs_epi16(_mm_cmpeq_epi32(sum2, best), _mm_cmpeq_epi32(sum3, best));
-		last_q_way = _mm_movemask_epi8(_mm_packs_epi16(m10, m32)) + q;
+		sum3 = _mm_unpackhi_epi16(sum1, zero);
+		sum2 = _mm_unpacklo_epi16(sum1, zero);
+		sum1 = _mm_unpackhi_epi16(sum0, zero);
+		sum0 = _mm_unpacklo_epi16(sum0, zero);
 
-		water = _mm_cvtsi128_si32(best);
-		if (water <= 0)
-			break;
+#undef PROCESS_PIXEL
+	}
+	else
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = stripes_U16[(size_t)(uint32_t)area.Data[index]]; \
+			__m128i add10 = _mm_load_si128(p + 0); \
+			__m128i add32 = _mm_load_si128(p + 1); \
+			sum0 = _mm_add_epi32(sum0, _mm_unpacklo_epi16(add10, zero)); \
+			sum1 = _mm_add_epi32(sum1, _mm_unpackhi_epi16(add10, zero)); \
+			sum2 = _mm_add_epi32(sum2, _mm_unpacklo_epi16(add32, zero)); \
+			sum3 = _mm_add_epi32(sum3, _mm_unpackhi_epi16(add32, zero)); \
+		} \
+
+		__m128i zero = _mm_setzero_si128();
+
+		PROCESS_PIXEL(0);
+		PROCESS_PIXEL(4);
+		PROCESS_PIXEL(8);
+		PROCESS_PIXEL(12);
+		PROCESS_PIXEL(16);
+		PROCESS_PIXEL(20);
+		PROCESS_PIXEL(24);
+		PROCESS_PIXEL(28);
+
+		PROCESS_PIXEL(32);
+		PROCESS_PIXEL(36);
+		PROCESS_PIXEL(40);
+		PROCESS_PIXEL(44);
+		PROCESS_PIXEL(48);
+		PROCESS_PIXEL(52);
+		PROCESS_PIXEL(56);
+		PROCESS_PIXEL(60);
+
+#undef PROCESS_PIXEL
+	}
+
+#define STORE_QUAD(index) \
+	_mm_store_si128((__m128i*)&chunks[(index) << 2], sum##index); \
+
+	STORE_QUAD(0);
+	STORE_QUAD(1);
+	STORE_QUAD(2);
+	STORE_QUAD(3);
+
+#undef STORE_QUAD
+}
+
+static INLINED int AlphaLevels(const Area& area, const __m128i(*errors_U16)[32], const int chunks[0x10], int water, int& last_q_way)
+{
+	if (water <= 0xFFFF)
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors_U16[(size_t)(uint32_t)area.Data[index]]; \
+			sum0 = _mm_adds_epu16(sum0, _mm_load_si128(p + 0)); \
+			sum1 = _mm_adds_epu16(sum1, _mm_load_si128(p + 1)); \
+		} \
+
+		__m128i best = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi64_si128((size_t)(uint32_t)water), 0), 0);
+
+		__m128i zero = _mm_setzero_si128();
+		__m128i limit = _mm_cmpeq_epi16(zero, zero);
+
+		__m128i bias = _mm_sub_epi16(limit, best);
+
+		for (int q = 0x10 << 16; !(q & (0x100 << 16)); q += 0x10 << 16)
+		{
+			errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+
+			if (chunks[q >> (16 + 4)] >= water)
+				continue;
+
+			__m128i sum0 = bias;
+			__m128i sum1 = bias;
+
+			PROCESS_PIXEL(0);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+			PROCESS_PIXEL(4);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+			PROCESS_PIXEL(8);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+			PROCESS_PIXEL(12);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+
+			PROCESS_PIXEL(32);
+			PROCESS_PIXEL(36);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+			PROCESS_PIXEL(40);
+			PROCESS_PIXEL(44);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+
+			PROCESS_PIXEL(48);
+			PROCESS_PIXEL(52);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+			PROCESS_PIXEL(56);
+			PROCESS_PIXEL(60);
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(sum0, sum1), limit)) == 0xFFFF)
+				continue;
+
+			__m128i sumw3 = _mm_unpackhi_epi16(sum1, zero);
+			__m128i sumw2 = _mm_unpacklo_epi16(sum1, zero);
+			__m128i sumw1 = _mm_unpackhi_epi16(sum0, zero);
+			__m128i sumw0 = _mm_unpacklo_epi16(sum0, zero);
+
+			__m128i cur = _mm_min_epi32(_mm_min_epi32(sumw0, sumw1), _mm_min_epi32(sumw2, sumw3));
+			cur = HorizontalMinimum4(cur);
+			cur = _mm_packus_epi32(cur, cur);
+
+			best = _mm_add_epi16(_mm_sub_epi16(best, limit), cur);
+
+			bias = _mm_sub_epi16(limit, best);
+
+			__m128i m10 = _mm_packs_epi16(_mm_cmpeq_epi16(sum0, cur), _mm_cmpeq_epi16(sum1, cur));
+			last_q_way = _mm_movemask_epi8(m10) + q;
+
+			water = _mm_cvtsi128_si32(best) & 0xFFFF;
+			if (water <= 0)
+				break;
+		}
+
+#undef PROCESS_PIXEL
+	}
+	else
+	{
+#define PROCESS_PIXEL(index) \
+		{ \
+			const __m128i* p = errors_U16[(size_t)(uint32_t)area.Data[index]]; \
+			__m128i add10 = _mm_load_si128(p + 0); \
+			__m128i add32 = _mm_load_si128(p + 1); \
+			sum0 = _mm_add_epi32(sum0, _mm_unpacklo_epi16(add10, zero)); \
+			sum1 = _mm_add_epi32(sum1, _mm_unpackhi_epi16(add10, zero)); \
+			sum2 = _mm_add_epi32(sum2, _mm_unpacklo_epi16(add32, zero)); \
+			sum3 = _mm_add_epi32(sum3, _mm_unpackhi_epi16(add32, zero)); \
+		} \
+
+		__m128i zero = _mm_setzero_si128();
+
+		__m128i best = _mm_shuffle_epi32(_mm_cvtsi64_si128((size_t)(uint32_t)water), 0);
+
+		for (int q = 0x10 << 16; !(q & (0x100 << 16)); q += 0x10 << 16)
+		{
+			errors_U16 = (const __m128i(*)[32])((const __m128i*)errors_U16 + 2);
+
+			if (chunks[q >> (16 + 4)] >= water)
+				continue;
+
+			__m128i sum0 = _mm_setzero_si128();
+			__m128i sum1 = _mm_setzero_si128();
+			__m128i sum2 = _mm_setzero_si128();
+			__m128i sum3 = _mm_setzero_si128();
+
+			PROCESS_PIXEL(0);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+			PROCESS_PIXEL(4);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+			PROCESS_PIXEL(8);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+			PROCESS_PIXEL(12);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+
+			PROCESS_PIXEL(16);
+			PROCESS_PIXEL(20);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+			PROCESS_PIXEL(24);
+			PROCESS_PIXEL(28);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+
+			PROCESS_PIXEL(32);
+			PROCESS_PIXEL(36);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+			PROCESS_PIXEL(40);
+			PROCESS_PIXEL(44);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+
+			PROCESS_PIXEL(48);
+			PROCESS_PIXEL(52);
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3)))) == 0)
+				continue;
+			PROCESS_PIXEL(56);
+			PROCESS_PIXEL(60);
+			__m128i cur = _mm_min_epi32(_mm_min_epi32(sum0, sum1), _mm_min_epi32(sum2, sum3));
+			if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, cur)) == 0)
+				continue;
+
+			best = HorizontalMinimum4(cur);
+
+			__m128i m10 = _mm_packs_epi16(_mm_cmpeq_epi32(sum0, best), _mm_cmpeq_epi32(sum1, best));
+			__m128i m32 = _mm_packs_epi16(_mm_cmpeq_epi32(sum2, best), _mm_cmpeq_epi32(sum3, best));
+			last_q_way = _mm_movemask_epi8(_mm_packs_epi16(m10, m32)) + q;
+
+			water = _mm_cvtsi128_si32(best);
+			if (water <= 0)
+				break;
+		}
+
+#undef PROCESS_PIXEL
 	}
 
 	return water;
-
-#undef PROCESS_PIXEL
 }
 
 
@@ -1473,8 +1955,8 @@ static int CompressBlockAlphaEnhanced(uint8_t output[8], const uint8_t* __restri
 		int last_a = avg_alpha + delta;
 		int last_q_way = 0;
 
-		AlphaStripes(area, chunks, g_stripesA[last_a]);
-		int err = AlphaLevels(area, g_errorsA[last_a], chunks, water, last_q_way);
+		AlphaStripes(area, chunks, g_stripesA_U16[last_a], water);
+		int err = AlphaLevels(area, g_errorsA_U16[last_a], chunks, water, last_q_way);
 
 		if (water > err)
 		{
@@ -1774,7 +2256,7 @@ static INLINED void DecompressBlockColorP(const uint8_t input[8], uint8_t* __res
 	_mm_storeu_si128((__m128i*)cell, _mm_packus_epi16(_mm_srai_epi16(mtL, 2), _mm_srai_epi16(mtH, 2)));
 }
 
-static INLINED void DecompressBlockColor(const uint8_t input[8], uint8_t* __restrict cell, size_t stride)
+static INLINED void DecompressBlockColorEnhanced(const uint8_t input[8], uint8_t* __restrict cell, size_t stride)
 {
 	int a, b;
 
@@ -1968,8 +2450,11 @@ static INLINED double CompareBlocksColorSSIM(const uint8_t* __restrict cell1, si
 }
 
 
-//#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; if (va.Error > vb.Error) { nodep[a] = vb; nodep[b] = va; } }
+#ifdef __clang__
+#define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; if (va.Error > vb.Error) { nodep[a] = vb; nodep[b] = va; } }
+#else
 #define SWAP_PAIR(a, b) { Node va = nodep[a], vb = nodep[b]; Node vc = va; vc = (va.Error > vb.Error) ? vb : vc; vb = (va.Error > vb.Error) ? va : vb; nodep[a] = vc; nodep[b] = vb; }
+#endif
 
 static void SortNodes2Shifted(Node* __restrict nodep)
 {
@@ -2829,43 +3314,57 @@ static INLINED __m128i load_color_GR(const uint8_t color[2])
 	return _mm_unpacklo_epi64(mrg, mrg);
 }
 
-static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int water, int q)
+static INLINED void DeriveData(const int* data, __m128i* dataGRB, __m128i* dataGR, __m128i* dataGB, int k)
 {
-	__m128i mc = load_color_GRB(color);
+	while (--k >= 0)
+	{
+		const __m128i mx = _mm_load_si128((const __m128i*)data); data += 4;
 
+		{
+			__m128i mgrb = _mm_packus_epi32(mx, mx);
+
+			_mm_store_si128(dataGRB++, mgrb);
+		}
+
+		{
+			__m128i mgr = _mm_unpacklo_epi64(mx, mx);
+			mgr = _mm_packus_epi32(mgr, mgr);
+
+			_mm_store_si128(dataGR++, mgr);
+		}
+
+		{
+			__m128i mgb = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
+			mgb = _mm_packus_epi32(mgb, mgb);
+
+			_mm_store_si128(dataGB++, mgb);
+		}
+	}
+}
+
+static INLINED int ComputeErrorColor4(__m128i mt10, __m128i mt32, __m128i mweights, const __m128i* data, int count, int water, int bias)
+{
 	__m128i best = _mm_cvtsi32_si128(water);
 
-	__m128i mt0 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_table[q][0]), 0);
-	__m128i mt1 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_table[q][1]), 0);
-
-	__m128i mt2 = _mm_subs_epu8(mc, mt0);
-	__m128i mt3 = _mm_subs_epu8(mc, mt1);
-
-	mt0 = _mm_adds_epu8(mc, mt0);
-	mt1 = _mm_adds_epu8(mc, mt1);
-
-	__m128i mt10 = _mm_packus_epi32(mt0, mt1);
-	__m128i mt32 = _mm_packus_epi32(mt2, mt3);
-
-	__m128i mgrb = _mm_load_si128((const __m128i*)g_GRB_I16);
+#ifdef OPTION_LINEAR
+	mt10 = _mm_and_si128(mt10, mweights);
+	mt32 = _mm_and_si128(mt32, mweights);
+	(void)bias;
+#else
+	__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
+	__m128i mbias3 = _mm_shuffle_epi32(_mm_cvtsi32_si128(bias * 3), 0);
+#endif
 
 	__m128i sum = _mm_setzero_si128();
 
-#ifndef OPTION_LINEAR
-	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-#endif
-
-	int k = half.Count, i = 0;
+	int k = count;
+	const __m128i* p = data;
 
 	while ((k -= 3) >= 0)
 	{
-		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
-		__m128i my = _mm_load_si128((const __m128i*)&half.Data[i + 4]);
-		__m128i mz = _mm_load_si128((const __m128i*)&half.Data[i + 8]);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-		mz = _mm_packus_epi32(mz, mz);
+		__m128i mx = _mm_load_si128(p);
+		__m128i my = _mm_load_si128(p + 1);
+		__m128i mz = _mm_load_si128(p + 2);
 
 		__m128i m10x = _mm_sub_epi16(mt10, mx);
 		__m128i m10y = _mm_sub_epi16(mt10, my);
@@ -2875,6 +3374,8 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		__m128i m32z = _mm_sub_epi16(mt32, mz);
 
 #ifndef OPTION_LINEAR
+		sum = _mm_add_epi32(sum, mbias3);
+
 		m10x = _mm_mullo_epi16(m10x, m10x);
 		m10y = _mm_mullo_epi16(m10y, m10y);
 		m10z = _mm_mullo_epi16(m10z, m10z);
@@ -2882,27 +3383,20 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		m32y = _mm_mullo_epi16(m32y, m32y);
 		m32z = _mm_mullo_epi16(m32z, m32z);
 
-		m10x = _mm_min_epu16(m10x, mlimit);
-		m10y = _mm_min_epu16(m10y, mlimit);
-		m10z = _mm_min_epu16(m10z, mlimit);
-		m32x = _mm_min_epu16(m32x, mlimit);
-		m32y = _mm_min_epu16(m32y, mlimit);
-		m32z = _mm_min_epu16(m32z, mlimit);
+		m10x = _mm_xor_si128(m10x, msign);
+		m10y = _mm_xor_si128(m10y, msign);
+		m10z = _mm_xor_si128(m10z, msign);
+		m32x = _mm_xor_si128(m32x, msign);
+		m32y = _mm_xor_si128(m32y, msign);
+		m32z = _mm_xor_si128(m32z, msign);
 
-		m10x = _mm_madd_epi16(m10x, mgrb);
-		m10y = _mm_madd_epi16(m10y, mgrb);
-		m10z = _mm_madd_epi16(m10z, mgrb);
-		m32x = _mm_madd_epi16(m32x, mgrb);
-		m32y = _mm_madd_epi16(m32y, mgrb);
-		m32z = _mm_madd_epi16(m32z, mgrb);
+		m10x = _mm_madd_epi16(m10x, mweights);
+		m10y = _mm_madd_epi16(m10y, mweights);
+		m10z = _mm_madd_epi16(m10z, mweights);
+		m32x = _mm_madd_epi16(m32x, mweights);
+		m32y = _mm_madd_epi16(m32y, mweights);
+		m32z = _mm_madd_epi16(m32z, mweights);
 #else
-		m10x = _mm_and_si128(m10x, mgrb);
-		m10y = _mm_and_si128(m10y, mgrb);
-		m10z = _mm_and_si128(m10z, mgrb);
-		m32x = _mm_and_si128(m32x, mgrb);
-		m32y = _mm_and_si128(m32y, mgrb);
-		m32z = _mm_and_si128(m32z, mgrb);
-
 		m10x = _mm_madd_epi16(m10x, m10x);
 		m10y = _mm_madd_epi16(m10y, m10y);
 		m10z = _mm_madd_epi16(m10z, m10z);
@@ -2923,7 +3417,7 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		sum = _mm_add_epi32(sum, me1y);
 		sum = _mm_add_epi32(sum, me1z);
 
-		i += 12;
+		p += 3;
 
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
@@ -2931,13 +3425,14 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 
 	k = (k < 0) ? k + 3 : k;
 
+#ifndef OPTION_LINEAR
+	__m128i mbias = _mm_shuffle_epi32(_mm_cvtsi32_si128(bias), 0);
+#endif
+
 	if (k & 2)
 	{
-		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
-		__m128i my = _mm_load_si128((const __m128i*)&half.Data[i + 4]);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
+		__m128i mx = _mm_load_si128(p);
+		__m128i my = _mm_load_si128(p + 1);
 
 		__m128i m10x = _mm_sub_epi16(mt10, mx);
 		__m128i m10y = _mm_sub_epi16(mt10, my);
@@ -2945,26 +3440,24 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		__m128i m32y = _mm_sub_epi16(mt32, my);
 
 #ifndef OPTION_LINEAR
+		sum = _mm_add_epi32(sum, mbias);
+		sum = _mm_add_epi32(sum, mbias);
+
 		m10x = _mm_mullo_epi16(m10x, m10x);
 		m10y = _mm_mullo_epi16(m10y, m10y);
 		m32x = _mm_mullo_epi16(m32x, m32x);
 		m32y = _mm_mullo_epi16(m32y, m32y);
 
-		m10x = _mm_min_epu16(m10x, mlimit);
-		m10y = _mm_min_epu16(m10y, mlimit);
-		m32x = _mm_min_epu16(m32x, mlimit);
-		m32y = _mm_min_epu16(m32y, mlimit);
+		m10x = _mm_xor_si128(m10x, msign);
+		m10y = _mm_xor_si128(m10y, msign);
+		m32x = _mm_xor_si128(m32x, msign);
+		m32y = _mm_xor_si128(m32y, msign);
 
-		m10x = _mm_madd_epi16(m10x, mgrb);
-		m10y = _mm_madd_epi16(m10y, mgrb);
-		m32x = _mm_madd_epi16(m32x, mgrb);
-		m32y = _mm_madd_epi16(m32y, mgrb);
+		m10x = _mm_madd_epi16(m10x, mweights);
+		m10y = _mm_madd_epi16(m10y, mweights);
+		m32x = _mm_madd_epi16(m32x, mweights);
+		m32y = _mm_madd_epi16(m32y, mweights);
 #else
-		m10x = _mm_and_si128(m10x, mgrb);
-		m10y = _mm_and_si128(m10y, mgrb);
-		m32x = _mm_and_si128(m32x, mgrb);
-		m32y = _mm_and_si128(m32y, mgrb);
-
 		m10x = _mm_madd_epi16(m10x, m10x);
 		m10y = _mm_madd_epi16(m10y, m10y);
 		m32x = _mm_madd_epi16(m32x, m32x);
@@ -2980,7 +3473,7 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 		sum = _mm_add_epi32(sum, me1x);
 		sum = _mm_add_epi32(sum, me1y);
 
-		i += 8;
+		p += 2;
 
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
@@ -2988,25 +3481,23 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 
 	if (k & 1)
 	{
-		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
-		mx = _mm_packus_epi32(mx, mx);
+		__m128i mx = _mm_load_si128(p);
 
 		__m128i m10 = _mm_sub_epi16(mt10, mx);
 		__m128i m32 = _mm_sub_epi16(mt32, mx);
 
 #ifndef OPTION_LINEAR
+		sum = _mm_add_epi32(sum, mbias);
+
 		m10 = _mm_mullo_epi16(m10, m10);
 		m32 = _mm_mullo_epi16(m32, m32);
 
-		m10 = _mm_min_epu16(m10, mlimit);
-		m32 = _mm_min_epu16(m32, mlimit);
+		m10 = _mm_xor_si128(m10, msign);
+		m32 = _mm_xor_si128(m32, msign);
 
-		m10 = _mm_madd_epi16(m10, mgrb);
-		m32 = _mm_madd_epi16(m32, mgrb);
+		m10 = _mm_madd_epi16(m10, mweights);
+		m32 = _mm_madd_epi16(m32, mweights);
 #else
-		m10 = _mm_and_si128(m10, mgrb);
-		m32 = _mm_and_si128(m32, mgrb);
-
 		m10 = _mm_madd_epi16(m10, m10);
 		m32 = _mm_madd_epi16(m32, m32);
 #endif
@@ -3020,98 +3511,32 @@ static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int
 			return water;
 	}
 
-#ifndef OPTION_LINEAR
-
-	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-	{
-		return int_sum;
-	}
-
-	sum = _mm_setzero_si128();
-
-	mgrb = _mm_cvtepi16_epi32(mgrb);
-
-	mt0 = _mm_cvtepi16_epi32(mt10);
-	mt1 = _mm_unpackhi_epi16(mt10, sum);
-	mt2 = _mm_cvtepi16_epi32(mt32);
-	mt3 = _mm_unpackhi_epi16(mt32, sum);
-
-	for (k = half.Count, i = 0; --k >= 0; i += 4)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
-
-		__m128i m0 = _mm_sub_epi16(mt0, mx);
-		__m128i m1 = _mm_sub_epi16(mt1, mx);
-		__m128i m2 = _mm_sub_epi16(mt2, mx);
-		__m128i m3 = _mm_sub_epi16(mt3, mx);
-
-		m0 = _mm_mullo_epi16(m0, m0);
-		m1 = _mm_mullo_epi16(m1, m1);
-		m2 = _mm_mullo_epi16(m2, m2);
-		m3 = _mm_mullo_epi16(m3, m3);
-
-		m0 = _mm_mullo_epi32(m0, mgrb);
-		m1 = _mm_mullo_epi32(m1, mgrb);
-		m2 = _mm_mullo_epi32(m2, mgrb);
-		m3 = _mm_mullo_epi32(m3, mgrb);
-
-		__m128i m10 = _mm_hadd_epi32(m0, m1);
-		__m128i m32 = _mm_hadd_epi32(m2, m3);
-		__m128i me4 = _mm_hadd_epi32(m10, m32);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		sum = _mm_add_epi32(sum, me1);
-	}
-
-#endif
-
 	return _mm_cvtsi128_si32(sum);
 }
 
-static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int water, int q)
+static INLINED int ComputeErrorColor2(__m128i mt3210, __m128i mweights, const __m128i* data, int count, int water, int bias)
 {
-	__m128i mc = load_color_GR(color);
-
 	__m128i best = _mm_cvtsi32_si128(water);
 
-	__m128i mtt = _mm_loadl_epi64((const __m128i*)&g_table[q][0]);
-	__m128i mt10 = _mm_unpacklo_epi32(mtt, mtt);
-
-	__m128i mt32 = _mm_subs_epu8(mc, mt10);
-
-	mt10 = _mm_adds_epu8(mc, mt10);
-
-	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
-
-#ifndef OPTION_LINEAR
-	__m128i mgr = _mm_load_si128((const __m128i*)g_GR_I16);
+#ifdef OPTION_LINEAR
+	(void)mweights;
+	(void)bias;
+#else
+	__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
+	__m128i mbias4 = _mm_shuffle_epi32(_mm_cvtsi32_si128(bias * 4), 0);
 #endif
 
 	__m128i sum = _mm_setzero_si128();
 
-#ifndef OPTION_LINEAR
-	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-#endif
-
-	int k = half.Count, i = 0;
+	int k = count;
+	const __m128i* p = data;
 
 	while ((k -= 4) >= 0)
 	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&half.Data[i]);
-		__m128i my = _mm_loadl_epi64((const __m128i*)&half.Data[i + 4]);
-		__m128i mz = _mm_loadl_epi64((const __m128i*)&half.Data[i + 8]);
-		__m128i mw = _mm_loadl_epi64((const __m128i*)&half.Data[i + 12]);
-
-		mx = _mm_unpacklo_epi64(mx, mx);
-		my = _mm_unpacklo_epi64(my, my);
-		mz = _mm_unpacklo_epi64(mz, mz);
-		mw = _mm_unpacklo_epi64(mw, mw);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-		mz = _mm_packus_epi32(mz, mz);
-		mw = _mm_packus_epi32(mw, mw);
+		__m128i mx = _mm_load_si128(p);
+		__m128i my = _mm_load_si128(p + 1);
+		__m128i mz = _mm_load_si128(p + 2);
+		__m128i mw = _mm_load_si128(p + 3);
 
 		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
 		__m128i m3210y = _mm_sub_epi16(mt3210, my);
@@ -3119,20 +3544,22 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
 
 #ifndef OPTION_LINEAR
+		sum = _mm_add_epi32(sum, mbias4);
+
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 		m3210z = _mm_mullo_epi16(m3210z, m3210z);
 		m3210w = _mm_mullo_epi16(m3210w, m3210w);
 
-		m3210x = _mm_min_epu16(m3210x, mlimit);
-		m3210y = _mm_min_epu16(m3210y, mlimit);
-		m3210z = _mm_min_epu16(m3210z, mlimit);
-		m3210w = _mm_min_epu16(m3210w, mlimit);
+		m3210x = _mm_xor_si128(m3210x, msign);
+		m3210y = _mm_xor_si128(m3210y, msign);
+		m3210z = _mm_xor_si128(m3210z, msign);
+		m3210w = _mm_xor_si128(m3210w, msign);
 
-		m3210x = _mm_madd_epi16(m3210x, mgr);
-		m3210y = _mm_madd_epi16(m3210y, mgr);
-		m3210z = _mm_madd_epi16(m3210z, mgr);
-		m3210w = _mm_madd_epi16(m3210w, mgr);
+		m3210x = _mm_madd_epi16(m3210x, mweights);
+		m3210y = _mm_madd_epi16(m3210y, mweights);
+		m3210z = _mm_madd_epi16(m3210z, mweights);
+		m3210w = _mm_madd_epi16(m3210w, mweights);
 #else
 		m3210x = _mm_madd_epi16(m3210x, m3210x);
 		m3210y = _mm_madd_epi16(m3210y, m3210y);
@@ -3150,35 +3577,36 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		sum = _mm_add_epi32(sum, me1z);
 		sum = _mm_add_epi32(sum, me1w);
 
-		i += 16;
+		p += 4;
 
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
 	}
 
+#ifndef OPTION_LINEAR
+	__m128i mbias = _mm_srai_epi16(mbias4, 2);
+#endif
+
 	if (k & 2)
 	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&half.Data[i]);
-		__m128i my = _mm_loadl_epi64((const __m128i*)&half.Data[i + 4]);
-
-		mx = _mm_unpacklo_epi64(mx, mx);
-		my = _mm_unpacklo_epi64(my, my);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
+		__m128i mx = _mm_load_si128(p);
+		__m128i my = _mm_load_si128(p + 1);
 
 		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
 		__m128i m3210y = _mm_sub_epi16(mt3210, my);
 
 #ifndef OPTION_LINEAR
+		sum = _mm_add_epi32(sum, mbias);
+		sum = _mm_add_epi32(sum, mbias);
+
 		m3210x = _mm_mullo_epi16(m3210x, m3210x);
 		m3210y = _mm_mullo_epi16(m3210y, m3210y);
 
-		m3210x = _mm_min_epu16(m3210x, mlimit);
-		m3210y = _mm_min_epu16(m3210y, mlimit);
+		m3210x = _mm_xor_si128(m3210x, msign);
+		m3210y = _mm_xor_si128(m3210y, msign);
 
-		m3210x = _mm_madd_epi16(m3210x, mgr);
-		m3210y = _mm_madd_epi16(m3210y, mgr);
+		m3210x = _mm_madd_epi16(m3210x, mweights);
+		m3210y = _mm_madd_epi16(m3210y, mweights);
 #else
 		m3210x = _mm_madd_epi16(m3210x, m3210x);
 		m3210y = _mm_madd_epi16(m3210y, m3210y);
@@ -3190,7 +3618,7 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 		sum = _mm_add_epi32(sum, me1x);
 		sum = _mm_add_epi32(sum, me1y);
 
-		i += 8;
+		p += 2;
 
 		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
 			return water;
@@ -3198,15 +3626,16 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 
 	if (k & 1)
 	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&half.Data[i]);
-		mx = _mm_unpacklo_epi64(mx, mx);
-		mx = _mm_packus_epi32(mx, mx);
+		__m128i mx = _mm_load_si128(p);
 
 		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
+
 #ifndef OPTION_LINEAR
+		sum = _mm_add_epi32(sum, mbias);
+
 		m3210 = _mm_mullo_epi16(m3210, m3210);
-		m3210 = _mm_min_epu16(m3210, mlimit);
-		m3210 = _mm_madd_epi16(m3210, mgr);
+		m3210 = _mm_xor_si128(m3210, msign);
+		m3210 = _mm_madd_epi16(m3210, mweights);
 #else
 		m3210 = _mm_madd_epi16(m3210, m3210);
 #endif
@@ -3219,44 +3648,43 @@ static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int 
 			return water;
 	}
 
-#ifndef OPTION_LINEAR
+	return _mm_cvtsi128_si32(sum);
+}
 
-	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * Min(kGreen, kRed))
-	{
-		return int_sum;
-	}
 
-	sum = _mm_setzero_si128();
+static INLINED int ComputeErrorGRB(const Half& half, const uint8_t color[4], int water, int q)
+{
+	__m128i md = _mm_loadl_epi64((const __m128i*)g_table[q]);
+	md = _mm_shufflelo_epi16(md, _MM_SHUFFLE(2, 2, 0, 0));
+	md = _mm_unpacklo_epi32(md, md);
 
-	mgr = _mm_cvtepi16_epi32(mgr);
+	__m128i mc = load_color_GRB(color);
+	mc = _mm_packus_epi32(mc, mc);
 
-	mt10 = _mm_cvtepi16_epi32(mt3210);
-	mt32 = _mm_unpackhi_epi16(mt3210, sum);
+	__m128i mt10 = _mm_adds_epu8(mc, md);
+	__m128i mt32 = _mm_subs_epu8(mc, md);
 
-	for (k = half.Count, i = 0; --k >= 0; i += 4)
-	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&half.Data[i]);
-		mx = _mm_unpacklo_epi64(mx, mx);
+	__m128i mgrb = _mm_load_si128((const __m128i*)g_GRB_I16);
 
-		__m128i m10 = _mm_sub_epi16(mt10, mx);
-		__m128i m32 = _mm_sub_epi16(mt32, mx);
+	return ComputeErrorColor4(mt10, mt32, mgrb, half.DataGRB, half.Count, water, 0x8000 * (kGreen + kRed + kBlue));
+}
 
-		m10 = _mm_mullo_epi16(m10, m10);
-		m32 = _mm_mullo_epi16(m32, m32);
+static INLINED int ComputeErrorGR(const Half& half, const uint8_t color[2], int water, int q)
+{
+	__m128i md = _mm_loadl_epi64((const __m128i*)g_table[q]);
+	md = _mm_unpacklo_epi32(md, md);
 
-		m10 = _mm_mullo_epi32(m10, mgr);
-		m32 = _mm_mullo_epi32(m32, mgr);
+	__m128i mc = load_color_GR(color);
 
-		__m128i me4 = _mm_hadd_epi32(m10, m32);
-		__m128i me1 = HorizontalMinimum4(me4);
+	__m128i mt3210 = _mm_packus_epi32(_mm_adds_epu8(mc, md), _mm_subs_epu8(mc, md));
 
-		sum = _mm_add_epi32(sum, me1);
-	}
-
+#ifdef OPTION_LINEAR
+	__m128i mgr = _mm_setzero_si128();
+#else
+	__m128i mgr = _mm_load_si128((const __m128i*)g_GR_I16);
 #endif
 
-	return _mm_cvtsi128_si32(sum);
+	return ComputeErrorColor2(mt3210, mgr, half.DataGR, half.Count, water, 0x8000 * (kGreen + kRed));
 }
 
 struct BlockStateColor
@@ -3550,71 +3978,67 @@ static INLINED void ComputeTableColor(const Half& half, const uint8_t color[4], 
 	if (halfSize == 0)
 		return;
 
+	__m128i md = _mm_loadl_epi64((const __m128i*)g_table[q]);
+	md = _mm_shufflelo_epi16(md, _MM_SHUFFLE(2, 2, 0, 0));
+	md = _mm_unpacklo_epi32(md, md);
+
 	__m128i mc = load_color_GRB(color);
+	mc = _mm_packus_epi32(mc, mc);
 
-	__m128i mt0 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_table[q][0]), 0);
-	__m128i mt1 = _mm_shuffle_epi32(_mm_cvtsi32_si128(g_table[q][1]), 0);
-
-	__m128i mt2 = _mm_subs_epu8(mc, mt0);
-	__m128i mt3 = _mm_subs_epu8(mc, mt1);
-
-	mt0 = _mm_adds_epu8(mc, mt0);
-	mt1 = _mm_adds_epu8(mc, mt1);
+	__m128i mt10 = _mm_adds_epu8(mc, md);
+	__m128i mt32 = _mm_subs_epu8(mc, md);
 
 	int good = 0xF;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mt0, mt1)) | 0xF000) == 0xFFFF) good &= ~2;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mt2, mt3)) | 0xF000) == 0xFFFF) good &= ~8;
+	int cmp = _mm_movemask_epi8(_mm_cmpeq_epi16(_mm_unpacklo_epi64(mt10, mt32), _mm_unpackhi_epi64(mt10, mt32))) ^ 0x3F3F;
+	if ((cmp & 0x003F) == 0) good &= ~2;
+	if ((cmp & 0x3F00) == 0) good &= ~8;
 
-	__m128i mgrb = _mm_loadl_epi64((const __m128i*)g_GRB_I16);
-	mgrb = _mm_cvtepi16_epi32(mgrb);
+	__m128i mgrb = _mm_load_si128((const __m128i*)g_GRB_I16);
+
+#ifdef OPTION_LINEAR
+	mt10 = _mm_and_si128(mt10, mgrb);
+	mt32 = _mm_and_si128(mt32, mgrb);
+#else
+	__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
+#endif
 
 	int ways[8];
 
-	for (size_t k = 0, i = 0; k < halfSize; k++, i += 4)
+	for (size_t i = 0; i < halfSize; i++)
 	{
-		__m128i mx = _mm_load_si128((const __m128i*)&half.Data[i]);
+		__m128i mx = _mm_load_si128((const __m128i*)half.DataGRB + i);
 
-		__m128i m0 = _mm_sub_epi16(mt0, mx);
-		__m128i m1 = _mm_sub_epi16(mt1, mx);
-		__m128i m2 = _mm_sub_epi16(mt2, mx);
-		__m128i m3 = _mm_sub_epi16(mt3, mx);
+		__m128i m10 = _mm_sub_epi16(mt10, mx);
+		__m128i m32 = _mm_sub_epi16(mt32, mx);
 
 #ifndef OPTION_LINEAR
-		m0 = _mm_mullo_epi16(m0, m0);
-		m1 = _mm_mullo_epi16(m1, m1);
-		m2 = _mm_mullo_epi16(m2, m2);
-		m3 = _mm_mullo_epi16(m3, m3);
+		m10 = _mm_mullo_epi16(m10, m10);
+		m32 = _mm_mullo_epi16(m32, m32);
 
-		m0 = _mm_mullo_epi32(m0, mgrb);
-		m1 = _mm_mullo_epi32(m1, mgrb);
-		m2 = _mm_mullo_epi32(m2, mgrb);
-		m3 = _mm_mullo_epi32(m3, mgrb);
+		m10 = _mm_xor_si128(m10, msign);
+		m32 = _mm_xor_si128(m32, msign);
+
+		m10 = _mm_madd_epi16(m10, mgrb);
+		m32 = _mm_madd_epi16(m32, mgrb);
 #else
-		m0 = _mm_and_si128(m0, mgrb);
-		m1 = _mm_and_si128(m1, mgrb);
-		m2 = _mm_and_si128(m2, mgrb);
-		m3 = _mm_and_si128(m3, mgrb);
-
-		m0 = _mm_mullo_epi16(m0, m0);
-		m1 = _mm_mullo_epi16(m1, m1);
-		m2 = _mm_mullo_epi16(m2, m2);
-		m3 = _mm_mullo_epi16(m3, m3);
+		m10 = _mm_madd_epi16(m10, m10);
+		m32 = _mm_madd_epi16(m32, m32);
 #endif
 
-		__m128i m10 = _mm_hadd_epi32(m0, m1);
-		__m128i m32 = _mm_hadd_epi32(m2, m3);
 		__m128i me4 = _mm_hadd_epi32(m10, m32);
 		__m128i me1 = HorizontalMinimum4(me4);
 
 		int way = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(me4, me1)));
-		ways[k] = (way & good) | (1 << 4);
+		ways[i] = (way & good) | (1 << 4);
 	}
 
+	__m128i mzero = _mm_setzero_si128();
+
 	__m128i vals[4];
-	_mm_store_si128(&vals[0], mt0);
-	_mm_store_si128(&vals[1], mt1);
-	_mm_store_si128(&vals[2], mt2);
-	_mm_store_si128(&vals[3], mt3);
+	_mm_store_si128(&vals[0], _mm_unpacklo_epi16(mt10, mzero));
+	_mm_store_si128(&vals[1], _mm_unpackhi_epi16(mt10, mzero));
+	_mm_store_si128(&vals[2], _mm_unpacklo_epi16(mt32, mzero));
+	_mm_store_si128(&vals[3], _mm_unpackhi_epi16(mt32, mzero));
 
 	int loops[8];
 
@@ -4093,6 +4517,10 @@ static INLINED void FilterPixelsColor(Half& half, uint32_t order)
 
 		int a = _mm_extract_epi16(m, 6);
 
+#ifdef OPTION_LINEAR
+		m = _mm_insert_epi16(m, 0, 6);
+#endif
+
 		_mm_store_si128((__m128i*)&half.Data[w * 4], m);
 
 		half.Shift[w] = order & 0xF;
@@ -4181,6 +4609,12 @@ static int CompressBlockColor(uint8_t output[8], const uint8_t* __restrict cell,
 
 	FilterPixelsColor(flip.A, 0xD951C840u);
 	FilterPixelsColor(flip.B, 0xD951C840u + 0x22222222u);
+
+	DeriveData(norm.A.Data, norm.A.DataGRB, norm.A.DataGR, norm.A.DataGB, norm.A.Count);
+	DeriveData(norm.B.Data, norm.B.DataGRB, norm.B.DataGR, norm.B.DataGB, norm.B.Count);
+
+	DeriveData(flip.A.Data, flip.A.DataGRB, flip.A.DataGR, flip.A.DataGB, flip.A.Count);
+	DeriveData(flip.B.Data, flip.B.DataGRB, flip.B.DataGR, flip.B.DataGB, flip.B.Count);
 
 	BlockStateColor s = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, 0, 0, 0 };
 
@@ -4278,154 +4712,80 @@ static int CompressBlockColor(uint8_t output[8], const uint8_t* __restrict cell,
 
 static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, int water)
 {
-	__m128i best = _mm_cvtsi64_si128((size_t)(uint32_t)water);
-
 	__m128i mt10 = _mm_packus_epi32(mc0, mc1);
 	__m128i mt32 = _mm_packus_epi32(mc2, mc3);
 
 	__m128i mgrb = _mm_load_si128((const __m128i*)g_GRB_I16);
 
-	__m128i sum = _mm_setzero_si128();
+	return ComputeErrorColor4(mt10, mt32, mgrb, area.DataGRB, area.Count, water, 0x8000 * (kGreen + kRed + kBlue));
+}
 
-#ifndef OPTION_LINEAR
-	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-#endif
+static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, int water)
+{
+	__m128i mt10 = _mm_unpacklo_epi64(mc0, mc1);
+	__m128i mt32 = _mm_unpacklo_epi64(mc2, mc3);
 
-	int k = area.Count, i = 0;
+	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
 
-	while ((k -= 3) >= 0)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		__m128i my = _mm_load_si128((const __m128i*)&area.Data[i + 4]);
-		__m128i mz = _mm_load_si128((const __m128i*)&area.Data[i + 8]);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-		mz = _mm_packus_epi32(mz, mz);
-
-		__m128i m10x = _mm_sub_epi16(mt10, mx);
-		__m128i m10y = _mm_sub_epi16(mt10, my);
-		__m128i m10z = _mm_sub_epi16(mt10, mz);
-		__m128i m32x = _mm_sub_epi16(mt32, mx);
-		__m128i m32y = _mm_sub_epi16(mt32, my);
-		__m128i m32z = _mm_sub_epi16(mt32, mz);
-
-#ifndef OPTION_LINEAR
-		m10x = _mm_mullo_epi16(m10x, m10x);
-		m10y = _mm_mullo_epi16(m10y, m10y);
-		m10z = _mm_mullo_epi16(m10z, m10z);
-		m32x = _mm_mullo_epi16(m32x, m32x);
-		m32y = _mm_mullo_epi16(m32y, m32y);
-		m32z = _mm_mullo_epi16(m32z, m32z);
-
-		m10x = _mm_min_epu16(m10x, mlimit);
-		m10y = _mm_min_epu16(m10y, mlimit);
-		m10z = _mm_min_epu16(m10z, mlimit);
-		m32x = _mm_min_epu16(m32x, mlimit);
-		m32y = _mm_min_epu16(m32y, mlimit);
-		m32z = _mm_min_epu16(m32z, mlimit);
-
-		m10x = _mm_madd_epi16(m10x, mgrb);
-		m10y = _mm_madd_epi16(m10y, mgrb);
-		m10z = _mm_madd_epi16(m10z, mgrb);
-		m32x = _mm_madd_epi16(m32x, mgrb);
-		m32y = _mm_madd_epi16(m32y, mgrb);
-		m32z = _mm_madd_epi16(m32z, mgrb);
+#ifdef OPTION_LINEAR
+	__m128i mgr = _mm_setzero_si128();
 #else
-		m10x = _mm_and_si128(m10x, mgrb);
-		m10y = _mm_and_si128(m10y, mgrb);
-		m10z = _mm_and_si128(m10z, mgrb);
-		m32x = _mm_and_si128(m32x, mgrb);
-		m32y = _mm_and_si128(m32y, mgrb);
-		m32z = _mm_and_si128(m32z, mgrb);
-
-		m10x = _mm_madd_epi16(m10x, m10x);
-		m10y = _mm_madd_epi16(m10y, m10y);
-		m10z = _mm_madd_epi16(m10z, m10z);
-		m32x = _mm_madd_epi16(m32x, m32x);
-		m32y = _mm_madd_epi16(m32y, m32y);
-		m32z = _mm_madd_epi16(m32z, m32z);
+	__m128i mgr = _mm_load_si128((const __m128i*)g_GR_I16);
 #endif
 
-		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
-		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
-		__m128i me4z = _mm_hadd_epi32(m10z, m32z);
+	return ComputeErrorColor2(mt3210, mgr, area.DataGR, area.Count, water, 0x8000 * (kGreen + kRed));
+}
 
-		__m128i me1x = HorizontalMinimum4(me4x);
-		__m128i me1y = HorizontalMinimum4(me4y);
-		__m128i me1z = HorizontalMinimum4(me4z);
+static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, int water)
+{
+	__m128i mt10 = _mm_unpacklo_epi64(_mm_shuffle_epi32(mc0, _MM_SHUFFLE(2, 0, 2, 0)), _mm_shuffle_epi32(mc1, _MM_SHUFFLE(2, 0, 2, 0)));
+	__m128i mt32 = _mm_unpacklo_epi64(_mm_shuffle_epi32(mc2, _MM_SHUFFLE(2, 0, 2, 0)), _mm_shuffle_epi32(mc3, _MM_SHUFFLE(2, 0, 2, 0)));
 
-		sum = _mm_add_epi32(sum, me1x);
-		sum = _mm_add_epi32(sum, me1y);
-		sum = _mm_add_epi32(sum, me1z);
+	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
 
-		i += 12;
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-	k = (k < 0) ? k + 3 : k;
-
-	if (k & 2)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		__m128i my = _mm_load_si128((const __m128i*)&area.Data[i + 4]);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-
-		__m128i m10x = _mm_sub_epi16(mt10, mx);
-		__m128i m10y = _mm_sub_epi16(mt10, my);
-		__m128i m32x = _mm_sub_epi16(mt32, mx);
-		__m128i m32y = _mm_sub_epi16(mt32, my);
-
-#ifndef OPTION_LINEAR
-		m10x = _mm_mullo_epi16(m10x, m10x);
-		m10y = _mm_mullo_epi16(m10y, m10y);
-		m32x = _mm_mullo_epi16(m32x, m32x);
-		m32y = _mm_mullo_epi16(m32y, m32y);
-
-		m10x = _mm_min_epu16(m10x, mlimit);
-		m10y = _mm_min_epu16(m10y, mlimit);
-		m32x = _mm_min_epu16(m32x, mlimit);
-		m32y = _mm_min_epu16(m32y, mlimit);
-
-		m10x = _mm_madd_epi16(m10x, mgrb);
-		m10y = _mm_madd_epi16(m10y, mgrb);
-		m32x = _mm_madd_epi16(m32x, mgrb);
-		m32y = _mm_madd_epi16(m32y, mgrb);
+#ifdef OPTION_LINEAR
+	__m128i mgb = _mm_setzero_si128();
 #else
-		m10x = _mm_and_si128(m10x, mgrb);
-		m10y = _mm_and_si128(m10y, mgrb);
-		m32x = _mm_and_si128(m32x, mgrb);
-		m32y = _mm_and_si128(m32y, mgrb);
-
-		m10x = _mm_madd_epi16(m10x, m10x);
-		m10y = _mm_madd_epi16(m10y, m10y);
-		m32x = _mm_madd_epi16(m32x, m32x);
-		m32y = _mm_madd_epi16(m32y, m32y);
+	__m128i mgb = _mm_load_si128((const __m128i*)g_GB_I16);
 #endif
 
-		__m128i me4x = _mm_hadd_epi32(m10x, m32x);
-		__m128i me4y = _mm_hadd_epi32(m10y, m32y);
+	return ComputeErrorColor2(mt3210, mgb, area.DataGB, area.Count, water, 0x8000 * (kGreen + kBlue));
+}
 
-		__m128i me1x = HorizontalMinimum4(me4x);
-		__m128i me1y = HorizontalMinimum4(me4y);
+static INLINED void ComputeTableColorFour(const Area& area, __m128i mc0, __m128i mc1, __m128i mc2, __m128i mc3, uint32_t& index)
+{
+	size_t areaSize = (size_t)(uint32_t)area.Count;
+	if (areaSize == 0)
+		return;
 
-		sum = _mm_add_epi32(sum, me1x);
-		sum = _mm_add_epi32(sum, me1y);
+	__m128i mt10 = _mm_packus_epi32(mc0, mc1);
+	__m128i mt32 = _mm_packus_epi32(mc2, mc3);
 
-		i += 8;
+	int good = 0xF;
+	int cmp = _mm_movemask_epi8(_mm_cmpeq_epi16(_mm_unpacklo_epi64(mt10, mt32), _mm_unpackhi_epi64(mt10, mt32))) ^ 0x3F3F;
+	if ((cmp & 0x003F) == 0) good &= ~2;
+	if ((cmp & 0x3F00) == 0) good &= ~8;
+	cmp = _mm_movemask_epi8(_mm_cmpeq_epi16(_mm_unpacklo_epi64(mt10, mt10), mt32)) ^ 0x3F3F;
+	if ((cmp & 0x003F) == 0) good &= ~4;
+	if ((cmp & 0x3F00) == 0) good &= ~8;
+	cmp = _mm_movemask_epi8(_mm_cmpeq_epi16(_mm_unpackhi_epi64(mt10, mt10), mt32)) ^ 0x3F3F;
+	if ((cmp & 0x003F) == 0) good &= ~4;
+	if ((cmp & 0x3F00) == 0) good &= ~8;
 
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
+	__m128i mgrb = _mm_load_si128((const __m128i*)g_GRB_I16);
 
-	if (k & 1)
+#ifdef OPTION_LINEAR
+	mt10 = _mm_and_si128(mt10, mgrb);
+	mt32 = _mm_and_si128(mt32, mgrb);
+#else
+	__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
+#endif
+
+	int ways[16];
+
+	for (size_t i = 0; i < areaSize; i++)
 	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		mx = _mm_packus_epi32(mx, mx);
+		__m128i mx = _mm_load_si128((const __m128i*)area.DataGRB + i);
 
 		__m128i m10 = _mm_sub_epi16(mt10, mx);
 		__m128i m32 = _mm_sub_epi16(mt32, mx);
@@ -4434,15 +4794,12 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		m10 = _mm_mullo_epi16(m10, m10);
 		m32 = _mm_mullo_epi16(m32, m32);
 
-		m10 = _mm_min_epu16(m10, mlimit);
-		m32 = _mm_min_epu16(m32, mlimit);
+		m10 = _mm_xor_si128(m10, msign);
+		m32 = _mm_xor_si128(m32, msign);
 
 		m10 = _mm_madd_epi16(m10, mgrb);
 		m32 = _mm_madd_epi16(m32, mgrb);
 #else
-		m10 = _mm_and_si128(m10, mgrb);
-		m32 = _mm_and_si128(m32, mgrb);
-
 		m10 = _mm_madd_epi16(m10, m10);
 		m32 = _mm_madd_epi16(m32, m32);
 #endif
@@ -4450,493 +4807,17 @@ static INLINED int ComputeErrorFourGRB(const Area& area, __m128i mc0, __m128i mc
 		__m128i me4 = _mm_hadd_epi32(m10, m32);
 		__m128i me1 = HorizontalMinimum4(me4);
 
-		sum = _mm_add_epi32(sum, me1);
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-#ifndef OPTION_LINEAR
-
-	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-	{
-		return int_sum;
-	}
-
-	sum = _mm_setzero_si128();
-
-	mgrb = _mm_cvtepi16_epi32(mgrb);
-
-	__m128i mt0 = _mm_cvtepi16_epi32(mt10);
-	__m128i mt1 = _mm_unpackhi_epi16(mt10, sum);
-	__m128i mt2 = _mm_cvtepi16_epi32(mt32);
-	__m128i mt3 = _mm_unpackhi_epi16(mt32, sum);
-
-	for (k = area.Count, i = 0; --k >= 0; i += 4)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-
-		__m128i m0 = _mm_sub_epi16(mt0, mx);
-		__m128i m1 = _mm_sub_epi16(mt1, mx);
-		__m128i m2 = _mm_sub_epi16(mt2, mx);
-		__m128i m3 = _mm_sub_epi16(mt3, mx);
-
-		m0 = _mm_mullo_epi16(m0, m0);
-		m1 = _mm_mullo_epi16(m1, m1);
-		m2 = _mm_mullo_epi16(m2, m2);
-		m3 = _mm_mullo_epi16(m3, m3);
-
-		m0 = _mm_mullo_epi32(m0, mgrb);
-		m1 = _mm_mullo_epi32(m1, mgrb);
-		m2 = _mm_mullo_epi32(m2, mgrb);
-		m3 = _mm_mullo_epi32(m3, mgrb);
-
-		__m128i m10 = _mm_hadd_epi32(m0, m1);
-		__m128i m32 = _mm_hadd_epi32(m2, m3);
-		__m128i me4 = _mm_hadd_epi32(m10, m32);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		sum = _mm_add_epi32(sum, me1);
-	}
-
-#endif
-
-	return (int)_mm_cvtsi128_si64(sum);
-}
-
-static INLINED int ComputeErrorFourGR(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, int water)
-{
-	__m128i best = _mm_cvtsi64_si128((size_t)(uint32_t)water);
-
-	__m128i mt10 = _mm_unpacklo_epi64(mc0, mc1);
-	__m128i mt32 = _mm_unpacklo_epi64(mc2, mc3);
-
-	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
-
-#ifndef OPTION_LINEAR
-	__m128i mgr = _mm_load_si128((const __m128i*)g_GR_I16);
-#endif
-
-	__m128i sum = _mm_setzero_si128();
-
-#ifndef OPTION_LINEAR
-	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-#endif
-
-	int k = area.Count, i = 0;
-
-	while ((k -= 4) >= 0)
-	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&area.Data[i]);
-		__m128i my = _mm_loadl_epi64((const __m128i*)&area.Data[i + 4]);
-		__m128i mz = _mm_loadl_epi64((const __m128i*)&area.Data[i + 8]);
-		__m128i mw = _mm_loadl_epi64((const __m128i*)&area.Data[i + 12]);
-
-		mx = _mm_unpacklo_epi64(mx, mx);
-		my = _mm_unpacklo_epi64(my, my);
-		mz = _mm_unpacklo_epi64(mz, mz);
-		mw = _mm_unpacklo_epi64(mw, mw);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-		mz = _mm_packus_epi32(mz, mz);
-		mw = _mm_packus_epi32(mw, mw);
-
-		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
-		__m128i m3210y = _mm_sub_epi16(mt3210, my);
-		__m128i m3210z = _mm_sub_epi16(mt3210, mz);
-		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
-
-#ifndef OPTION_LINEAR
-		m3210x = _mm_mullo_epi16(m3210x, m3210x);
-		m3210y = _mm_mullo_epi16(m3210y, m3210y);
-		m3210z = _mm_mullo_epi16(m3210z, m3210z);
-		m3210w = _mm_mullo_epi16(m3210w, m3210w);
-
-		m3210x = _mm_min_epu16(m3210x, mlimit);
-		m3210y = _mm_min_epu16(m3210y, mlimit);
-		m3210z = _mm_min_epu16(m3210z, mlimit);
-		m3210w = _mm_min_epu16(m3210w, mlimit);
-
-		m3210x = _mm_madd_epi16(m3210x, mgr);
-		m3210y = _mm_madd_epi16(m3210y, mgr);
-		m3210z = _mm_madd_epi16(m3210z, mgr);
-		m3210w = _mm_madd_epi16(m3210w, mgr);
-#else
-		m3210x = _mm_madd_epi16(m3210x, m3210x);
-		m3210y = _mm_madd_epi16(m3210y, m3210y);
-		m3210z = _mm_madd_epi16(m3210z, m3210z);
-		m3210w = _mm_madd_epi16(m3210w, m3210w);
-#endif
-
-		__m128i me1x = HorizontalMinimum4(m3210x);
-		__m128i me1y = HorizontalMinimum4(m3210y);
-		__m128i me1z = HorizontalMinimum4(m3210z);
-		__m128i me1w = HorizontalMinimum4(m3210w);
-
-		sum = _mm_add_epi32(sum, me1x);
-		sum = _mm_add_epi32(sum, me1y);
-		sum = _mm_add_epi32(sum, me1z);
-		sum = _mm_add_epi32(sum, me1w);
-
-		i += 16;
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-	if (k & 2)
-	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&area.Data[i]);
-		__m128i my = _mm_loadl_epi64((const __m128i*)&area.Data[i + 4]);
-
-		mx = _mm_unpacklo_epi64(mx, mx);
-		my = _mm_unpacklo_epi64(my, my);
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-
-		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
-		__m128i m3210y = _mm_sub_epi16(mt3210, my);
-
-#ifndef OPTION_LINEAR
-		m3210x = _mm_mullo_epi16(m3210x, m3210x);
-		m3210y = _mm_mullo_epi16(m3210y, m3210y);
-
-		m3210x = _mm_min_epu16(m3210x, mlimit);
-		m3210y = _mm_min_epu16(m3210y, mlimit);
-
-		m3210x = _mm_madd_epi16(m3210x, mgr);
-		m3210y = _mm_madd_epi16(m3210y, mgr);
-#else
-		m3210x = _mm_madd_epi16(m3210x, m3210x);
-		m3210y = _mm_madd_epi16(m3210y, m3210y);
-#endif
-
-		__m128i me1x = HorizontalMinimum4(m3210x);
-		__m128i me1y = HorizontalMinimum4(m3210y);
-
-		sum = _mm_add_epi32(sum, me1x);
-		sum = _mm_add_epi32(sum, me1y);
-
-		i += 8;
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-	if (k & 1)
-	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&area.Data[i]);
-		mx = _mm_unpacklo_epi64(mx, mx);
-		mx = _mm_packus_epi32(mx, mx);
-
-		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
-#ifndef OPTION_LINEAR
-		m3210 = _mm_mullo_epi16(m3210, m3210);
-		m3210 = _mm_min_epu16(m3210, mlimit);
-		m3210 = _mm_madd_epi16(m3210, mgr);
-#else
-		m3210 = _mm_madd_epi16(m3210, m3210);
-#endif
-
-		__m128i me1 = HorizontalMinimum4(m3210);
-
-		sum = _mm_add_epi32(sum, me1);
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-#ifndef OPTION_LINEAR
-
-	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * Min(kGreen, kRed))
-	{
-		return int_sum;
-	}
-
-	sum = _mm_setzero_si128();
-
-	mgr = _mm_cvtepi16_epi32(mgr);
-
-	mt10 = _mm_cvtepi16_epi32(mt3210);
-	mt32 = _mm_unpackhi_epi16(mt3210, sum);
-
-	for (k = area.Count, i = 0; --k >= 0; i += 4)
-	{
-		__m128i mx = _mm_loadl_epi64((const __m128i*)&area.Data[i]);
-		mx = _mm_unpacklo_epi64(mx, mx);
-
-		__m128i m10 = _mm_sub_epi16(mt10, mx);
-		__m128i m32 = _mm_sub_epi16(mt32, mx);
-
-		m10 = _mm_mullo_epi16(m10, m10);
-		m32 = _mm_mullo_epi16(m32, m32);
-
-		m10 = _mm_mullo_epi32(m10, mgr);
-		m32 = _mm_mullo_epi32(m32, mgr);
-
-		__m128i me4 = _mm_hadd_epi32(m10, m32);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		sum = _mm_add_epi32(sum, me1);
-	}
-
-#endif
-
-	return (int)_mm_cvtsi128_si64(sum);
-}
-
-static INLINED int ComputeErrorFourGB(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, int water)
-{
-	__m128i best = _mm_cvtsi64_si128((size_t)(uint32_t)water);
-
-	__m128i mt10 = _mm_unpacklo_epi64(_mm_shuffle_epi32(mc0, _MM_SHUFFLE(2, 0, 2, 0)), _mm_shuffle_epi32(mc1, _MM_SHUFFLE(2, 0, 2, 0)));
-	__m128i mt32 = _mm_unpacklo_epi64(_mm_shuffle_epi32(mc2, _MM_SHUFFLE(2, 0, 2, 0)), _mm_shuffle_epi32(mc3, _MM_SHUFFLE(2, 0, 2, 0)));
-
-	__m128i mt3210 = _mm_packus_epi32(mt10, mt32);
-
-#ifndef OPTION_LINEAR
-	__m128i mgb = _mm_load_si128((const __m128i*)g_GB_I16);
-#endif
-
-	__m128i sum = _mm_setzero_si128();
-
-#ifndef OPTION_LINEAR
-	__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
-#endif
-
-	int k = area.Count, i = 0;
-
-	while ((k -= 4) >= 0)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		__m128i my = _mm_load_si128((const __m128i*)&area.Data[i + 4]);
-		__m128i mz = _mm_load_si128((const __m128i*)&area.Data[i + 8]);
-		__m128i mw = _mm_load_si128((const __m128i*)&area.Data[i + 12]);
-
-		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
-		my = _mm_shuffle_epi32(my, _MM_SHUFFLE(2, 0, 2, 0));
-		mz = _mm_shuffle_epi32(mz, _MM_SHUFFLE(2, 0, 2, 0));
-		mw = _mm_shuffle_epi32(mw, _MM_SHUFFLE(2, 0, 2, 0));
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-		mz = _mm_packus_epi32(mz, mz);
-		mw = _mm_packus_epi32(mw, mw);
-
-		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
-		__m128i m3210y = _mm_sub_epi16(mt3210, my);
-		__m128i m3210z = _mm_sub_epi16(mt3210, mz);
-		__m128i m3210w = _mm_sub_epi16(mt3210, mw);
-
-#ifndef OPTION_LINEAR
-		m3210x = _mm_mullo_epi16(m3210x, m3210x);
-		m3210y = _mm_mullo_epi16(m3210y, m3210y);
-		m3210z = _mm_mullo_epi16(m3210z, m3210z);
-		m3210w = _mm_mullo_epi16(m3210w, m3210w);
-
-		m3210x = _mm_min_epu16(m3210x, mlimit);
-		m3210y = _mm_min_epu16(m3210y, mlimit);
-		m3210z = _mm_min_epu16(m3210z, mlimit);
-		m3210w = _mm_min_epu16(m3210w, mlimit);
-
-		m3210x = _mm_madd_epi16(m3210x, mgb);
-		m3210y = _mm_madd_epi16(m3210y, mgb);
-		m3210z = _mm_madd_epi16(m3210z, mgb);
-		m3210w = _mm_madd_epi16(m3210w, mgb);
-#else
-		m3210x = _mm_madd_epi16(m3210x, m3210x);
-		m3210y = _mm_madd_epi16(m3210y, m3210y);
-		m3210z = _mm_madd_epi16(m3210z, m3210z);
-		m3210w = _mm_madd_epi16(m3210w, m3210w);
-#endif
-
-		__m128i me1x = HorizontalMinimum4(m3210x);
-		__m128i me1y = HorizontalMinimum4(m3210y);
-		__m128i me1z = HorizontalMinimum4(m3210z);
-		__m128i me1w = HorizontalMinimum4(m3210w);
-
-		sum = _mm_add_epi32(sum, me1x);
-		sum = _mm_add_epi32(sum, me1y);
-		sum = _mm_add_epi32(sum, me1z);
-		sum = _mm_add_epi32(sum, me1w);
-
-		i += 16;
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-	if (k & 2)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		__m128i my = _mm_load_si128((const __m128i*)&area.Data[i + 4]);
-
-		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
-		my = _mm_shuffle_epi32(my, _MM_SHUFFLE(2, 0, 2, 0));
-
-		mx = _mm_packus_epi32(mx, mx);
-		my = _mm_packus_epi32(my, my);
-
-		__m128i m3210x = _mm_sub_epi16(mt3210, mx);
-		__m128i m3210y = _mm_sub_epi16(mt3210, my);
-
-#ifndef OPTION_LINEAR
-		m3210x = _mm_mullo_epi16(m3210x, m3210x);
-		m3210y = _mm_mullo_epi16(m3210y, m3210y);
-
-		m3210x = _mm_min_epu16(m3210x, mlimit);
-		m3210y = _mm_min_epu16(m3210y, mlimit);
-
-		m3210x = _mm_madd_epi16(m3210x, mgb);
-		m3210y = _mm_madd_epi16(m3210y, mgb);
-#else
-		m3210x = _mm_madd_epi16(m3210x, m3210x);
-		m3210y = _mm_madd_epi16(m3210y, m3210y);
-#endif
-
-		__m128i me1x = HorizontalMinimum4(m3210x);
-		__m128i me1y = HorizontalMinimum4(m3210y);
-
-		sum = _mm_add_epi32(sum, me1x);
-		sum = _mm_add_epi32(sum, me1y);
-
-		i += 8;
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-	if (k & 1)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
-		mx = _mm_packus_epi32(mx, mx);
-
-		__m128i m3210 = _mm_sub_epi16(mt3210, mx);
-#ifndef OPTION_LINEAR
-		m3210 = _mm_mullo_epi16(m3210, m3210);
-		m3210 = _mm_min_epu16(m3210, mlimit);
-		m3210 = _mm_madd_epi16(m3210, mgb);
-#else
-		m3210 = _mm_madd_epi16(m3210, m3210);
-#endif
-
-		__m128i me1 = HorizontalMinimum4(m3210);
-
-		sum = _mm_add_epi32(sum, me1);
-
-		if (_mm_movemask_epi8(_mm_cmpgt_epi32(best, sum)) == 0)
-			return water;
-	}
-
-#ifndef OPTION_LINEAR
-
-	int int_sum = _mm_cvtsi128_si32(sum);
-	if (int_sum < 0x7FFF * Min(kGreen, kBlue))
-	{
-		return int_sum;
-	}
-
-	sum = _mm_setzero_si128();
-
-	mgb = _mm_cvtepi16_epi32(mgb);
-
-	mt10 = _mm_cvtepi16_epi32(mt3210);
-	mt32 = _mm_unpackhi_epi16(mt3210, sum);
-
-	for (k = area.Count, i = 0; --k >= 0; i += 4)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-		mx = _mm_shuffle_epi32(mx, _MM_SHUFFLE(2, 0, 2, 0));
-
-		__m128i m10 = _mm_sub_epi16(mt10, mx);
-		__m128i m32 = _mm_sub_epi16(mt32, mx);
-
-		m10 = _mm_mullo_epi16(m10, m10);
-		m32 = _mm_mullo_epi16(m32, m32);
-
-		m10 = _mm_mullo_epi32(m10, mgb);
-		m32 = _mm_mullo_epi32(m32, mgb);
-
-		__m128i me4 = _mm_hadd_epi32(m10, m32);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		sum = _mm_add_epi32(sum, me1);
-	}
-
-#endif
-
-	return (int)_mm_cvtsi128_si64(sum);
-}
-
-static INLINED void ComputeTableColorFour(const Area& area, __m128i mc0, __m128i mc1, const __m128i& mc2, const __m128i& mc3, uint32_t& index)
-{
-	size_t areaSize = (size_t)(uint32_t)area.Count;
-	if (areaSize == 0)
-		return;
-
-	int good = 0xF;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc0, mc1)) | 0xF000) == 0xFFFF) good &= ~2;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc0, mc2)) | 0xF000) == 0xFFFF) good &= ~4;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc0, mc3)) | 0xF000) == 0xFFFF) good &= ~8;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc1, mc2)) | 0xF000) == 0xFFFF) good &= ~4;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc1, mc3)) | 0xF000) == 0xFFFF) good &= ~8;
-	if ((_mm_movemask_epi8(_mm_cmpeq_epi32(mc2, mc3)) | 0xF000) == 0xFFFF) good &= ~8;
-
-	__m128i mgrb = _mm_loadl_epi64((const __m128i*)g_GRB_I16);
-	mgrb = _mm_cvtepi16_epi32(mgrb);
-
-	int ways[16];
-
-	for (size_t k = 0, i = 0; k < areaSize; k++, i += 4)
-	{
-		__m128i mx = _mm_load_si128((const __m128i*)&area.Data[i]);
-
-		__m128i m0 = _mm_sub_epi16(mc0, mx);
-		__m128i m1 = _mm_sub_epi16(mc1, mx);
-		__m128i m2 = _mm_sub_epi16(mc2, mx);
-		__m128i m3 = _mm_sub_epi16(mc3, mx);
-
-#ifndef OPTION_LINEAR
-		m0 = _mm_mullo_epi16(m0, m0);
-		m1 = _mm_mullo_epi16(m1, m1);
-		m2 = _mm_mullo_epi16(m2, m2);
-		m3 = _mm_mullo_epi16(m3, m3);
-
-		m0 = _mm_mullo_epi32(m0, mgrb);
-		m1 = _mm_mullo_epi32(m1, mgrb);
-		m2 = _mm_mullo_epi32(m2, mgrb);
-		m3 = _mm_mullo_epi32(m3, mgrb);
-#else
-		m0 = _mm_and_si128(m0, mgrb);
-		m1 = _mm_and_si128(m1, mgrb);
-		m2 = _mm_and_si128(m2, mgrb);
-		m3 = _mm_and_si128(m3, mgrb);
-
-		m0 = _mm_mullo_epi16(m0, m0);
-		m1 = _mm_mullo_epi16(m1, m1);
-		m2 = _mm_mullo_epi16(m2, m2);
-		m3 = _mm_mullo_epi16(m3, m3);
-#endif
-
-		__m128i m10 = _mm_hadd_epi32(m0, m1);
-		__m128i m32 = _mm_hadd_epi32(m2, m3);
-		__m128i me4 = _mm_hadd_epi32(m10, m32);
-		__m128i me1 = HorizontalMinimum4(me4);
-
 		int way = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(me4, me1)));
-		ways[k] = (way & good) | (1 << 4);
+		ways[i] = (way & good) | (1 << 4);
 	}
+
+	__m128i mzero = _mm_setzero_si128();
 
 	__m128i vals[4];
-	_mm_store_si128(&vals[0], mc0);
-	_mm_store_si128(&vals[1], mc1);
-	_mm_store_si128(&vals[2], mc2);
-	_mm_store_si128(&vals[3], mc3);
+	_mm_store_si128(&vals[0], _mm_unpacklo_epi16(mt10, mzero));
+	_mm_store_si128(&vals[1], _mm_unpackhi_epi16(mt10, mzero));
+	_mm_store_si128(&vals[2], _mm_unpacklo_epi16(mt32, mzero));
+	_mm_store_si128(&vals[3], _mm_unpackhi_epi16(mt32, mzero));
 
 	int loops[16];
 
@@ -5041,23 +4922,23 @@ static int CompressBlockColorH(uint8_t output[8], const Area& area, int input_er
 
 	for (int q = 0; q < 8; q++)
 	{
-		const auto stripes = g_stripesH[q];
-		const auto errors = g_errorsH[q];
+		const auto stripes_U16 = g_stripesH_U16[q];
+		const auto errors_U16 = g_errorsH_U16[q];
 
-		CombineStripes(area, 0, chunks0, stripes, kGreen);
-		CombineLevels(area, 0, err0, errors, chunks0, kGreen, water);
+		CombineStripes(area, 0, chunks0, stripes_U16, kGreen, water);
+		CombineLevels(area, 0, err0, errors_U16, chunks0, kGreen, water);
 		int min0 = err0[0x100].Error;
 		if (min0 >= water)
 			continue;
 
-		CombineStripes(area, 1, chunks1, stripes, kRed);
-		CombineLevels(area, 1, err1, errors, chunks1, kRed, water - min0);
+		CombineStripes(area, 1, chunks1, stripes_U16, kRed, water - min0);
+		CombineLevels(area, 1, err1, errors_U16, chunks1, kRed, water - min0);
 		int min1 = err1[0x100].Error;
 		if (min0 + min1 >= water)
 			continue;
 
-		CombineStripes(area, 2, chunks2, stripes, kBlue);
-		CombineLevels(area, 2, err2, errors, chunks2, kBlue, water - min0 - min1);
+		CombineStripes(area, 2, chunks2, stripes_U16, kBlue, water - min0 - min1);
+		CombineLevels(area, 2, err2, errors_U16, chunks2, kBlue, water - min0 - min1);
 		int min2 = err2[0x100].Error;
 		if (min0 + min1 + min2 >= water)
 			continue;
@@ -5305,23 +5186,23 @@ static int CompressBlockColorT(uint8_t output[8], const Area& area, int input_er
 
 	for (int q = 0; q < 8; q++)
 	{
-		const auto stripes = g_stripesT[q];
-		const auto errors = g_errorsT[q];
+		const auto stripes_U16 = g_stripesT_U16[q];
+		const auto errors_U16 = g_errorsT_U16[q];
 
-		CombineStripes(area, 0, chunks0, stripes, kGreen);
-		CombineLevels(area, 0, err0, errors, chunks0, kGreen, water);
+		CombineStripes(area, 0, chunks0, stripes_U16, kGreen, water);
+		CombineLevels(area, 0, err0, errors_U16, chunks0, kGreen, water);
 		int min0 = err0[0x100].Error;
 		if (min0 >= water)
 			continue;
 
-		CombineStripes(area, 1, chunks1, stripes, kRed);
-		CombineLevels(area, 1, err1, errors, chunks1, kRed, water - min0);
+		CombineStripes(area, 1, chunks1, stripes_U16, kRed, water - min0);
+		CombineLevels(area, 1, err1, errors_U16, chunks1, kRed, water - min0);
 		int min1 = err1[0x100].Error;
 		if (min0 + min1 >= water)
 			continue;
 
-		CombineStripes(area, 2, chunks2, stripes, kBlue);
-		CombineLevels(area, 2, err2, errors, chunks2, kBlue, water - min0 - min1);
+		CombineStripes(area, 2, chunks2, stripes_U16, kBlue, water - min0 - min1);
+		CombineLevels(area, 2, err2, errors_U16, chunks2, kBlue, water - min0 - min1);
 		int min2 = err2[0x100].Error;
 		if (min0 + min1 + min2 >= water)
 			continue;
@@ -5501,7 +5382,7 @@ static INLINED void PlanarCollectO(const Area& area, size_t offset, Surface& sur
 			continue;
 
 		surface.Mask[w] = -1;
-		surface.U[w] = (short)r;
+		surface.V[w] = (short)r;
 		surface.Data[w] = (short)area.Data[i * 4 + offset];
 		w++;
 	}
@@ -5518,31 +5399,26 @@ static INLINED void PlanarCollect(const Area& area, size_t offset, Surface& surf
 		int x = pos >> 2;
 		int y = pos & 3;
 
+		int d = area.Data[i * 4 + offset];
+
 		surface.Mask[i] = -1;
 		surface.U[i] = (short)x;
 		surface.V[i] = (short)y;
-		surface.Data[i] = (short)area.Data[i * 4 + offset];
+		surface.Data[i] = (short)d;
+
+		surface.Data_U8[i] = (uint8_t)d;
 	}
 }
 
+typedef struct alignas(16) { __m128i mmin0, mmin1, mmax0, mmax1; } PlanarPrepared;
+
 static INLINED int PlanarStripeO(const Surface& surface, int coL, int coH)
 {
-	__m128i moL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((coL << 2) + 2), 0), 0);
-	__m128i moH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((coH << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0L = _mm_and_si128(mmask0, moL);
-	__m128i mo0H = _mm_and_si128(mmask0, moH);
-	__m128i mo1L = _mm_and_si128(mmask1, moL);
-	__m128i mo1H = _mm_and_si128(mmask1, moH);
-
 	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-coL), 0), 0);
 	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - coH), 0), 0);
 
-	__m128i mr0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mr1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+	__m128i mr0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i mr1 = _mm_load_si128((const __m128i*)&surface.V[8]);
 
 	__m128i mmin0 = _mm_mullo_epi16(mmin, mr0);
 	__m128i mmin1 = _mm_mullo_epi16(mmin, mr1);
@@ -5550,11 +5426,14 @@ static INLINED int PlanarStripeO(const Surface& surface, int coL, int coH)
 	__m128i mmax0 = _mm_mullo_epi16(mmax, mr0);
 	__m128i mmax1 = _mm_mullo_epi16(mmax, mr1);
 
-	mmin0 = _mm_add_epi16(mmin0, mo0L);
-	mmin1 = _mm_add_epi16(mmin1, mo1L);
+	__m128i moL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((coL << 2) + 2), 0), 0);
+	__m128i moH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((coH << 2) + 2), 0), 0);
 
-	mmax0 = _mm_add_epi16(mmax0, mo0H);
-	mmax1 = _mm_add_epi16(mmax1, mo1H);
+	mmin0 = _mm_add_epi16(mmin0, moL);
+	mmin1 = _mm_add_epi16(mmin1, moL);
+
+	mmax0 = _mm_add_epi16(mmax0, moH);
+	mmax1 = _mm_add_epi16(mmax1, moH);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5567,86 +5446,12 @@ static INLINED int PlanarStripeO(const Surface& surface, int coL, int coH)
 
 	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
 	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
-
-	e0 = _mm_madd_epi16(e0, e0);
-	e1 = _mm_madd_epi16(e1, e1);
-
-	__m128i e = _mm_add_epi32(e0, e1);
-
-	e = HorizontalSum4(e);
-
-	return _mm_cvtsi128_si32(e);
-}
-
-static INLINED int PlanarStripeOH(const Surface& surface, int co, int chL, int chH)
-{
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
 
 	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
 	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
 
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
-
-	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
-	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
-
-	__m128i mmin0 = _mm_mullo_epi16(mmin, my0);
-	__m128i mmin1 = _mm_mullo_epi16(mmin, my1);
-
-	__m128i mmax0 = _mm_mullo_epi16(mmax, my0);
-	__m128i mmax1 = _mm_mullo_epi16(mmax, my1);
-
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
-
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
-
-	//
-
-	__m128i mhL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chL - co), 0), 0);
-	__m128i mhH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chH - co), 0), 0);
-
-	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
-
-	__m128i mt0L = _mm_mullo_epi16(mhL, mx0);
-	__m128i mt1L = _mm_mullo_epi16(mhL, mx1);
-
-	mmin0 = _mm_add_epi16(mmin0, mt0L);
-	mmin1 = _mm_add_epi16(mmin1, mt1L);
-
-	__m128i mt0H = _mm_mullo_epi16(mhH, mx0);
-	__m128i mt1H = _mm_mullo_epi16(mhH, mx1);
-
-	mmax0 = _mm_add_epi16(mmax0, mt0H);
-	mmax1 = _mm_add_epi16(mmax1, mt1H);
-
-	mmin0 = _mm_srai_epi16(mmin0, 2);
-	mmin1 = _mm_srai_epi16(mmin1, 2);
-
-	mmax0 = _mm_srai_epi16(mmax0, 2);
-	mmax1 = _mm_srai_epi16(mmax1, 2);
-
-	mmin0 = _mm_packus_epi16(mmin0, mmin1);
-	mmax0 = _mm_packus_epi16(mmax0, mmax1);
-
-	__m128i mzero = _mm_setzero_si128();
-
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+	e0 = _mm_and_si128(e0, mmask0);
+	e1 = _mm_and_si128(e1, mmask1);
 
 	e0 = _mm_madd_epi16(e0, e0);
 	e1 = _mm_madd_epi16(e1, e1);
@@ -5658,87 +5463,7 @@ static INLINED int PlanarStripeOH(const Surface& surface, int co, int chL, int c
 	return _mm_cvtsi128_si32(e);
 }
 
-static INLINED int PlanarStripeOV(const Surface& surface, int co, int cvL, int cvH)
-{
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
-
-	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
-
-	__m128i mmin0 = _mm_mullo_epi16(mmin, mx0);
-	__m128i mmin1 = _mm_mullo_epi16(mmin, mx1);
-
-	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
-	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
-
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
-
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
-
-	//
-
-	__m128i mvL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvL - co), 0), 0);
-	__m128i mvH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvH - co), 0), 0);
-
-	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
-	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
-
-	__m128i mt0L = _mm_mullo_epi16(mvL, my0);
-	__m128i mt1L = _mm_mullo_epi16(mvL, my1);
-
-	mmin0 = _mm_add_epi16(mmin0, mt0L);
-	mmin1 = _mm_add_epi16(mmin1, mt1L);
-
-	__m128i mt0H = _mm_mullo_epi16(mvH, my0);
-	__m128i mt1H = _mm_mullo_epi16(mvH, my1);
-
-	mmax0 = _mm_add_epi16(mmax0, mt0H);
-	mmax1 = _mm_add_epi16(mmax1, mt1H);
-
-	mmin0 = _mm_srai_epi16(mmin0, 2);
-	mmin1 = _mm_srai_epi16(mmin1, 2);
-
-	mmax0 = _mm_srai_epi16(mmax0, 2);
-	mmax1 = _mm_srai_epi16(mmax1, 2);
-
-	mmin0 = _mm_packus_epi16(mmin0, mmin1);
-	mmax0 = _mm_packus_epi16(mmax0, mmax1);
-
-	__m128i mzero = _mm_setzero_si128();
-
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
-
-	e0 = _mm_madd_epi16(e0, e0);
-	e1 = _mm_madd_epi16(e1, e1);
-
-	__m128i e = _mm_add_epi32(e0, e1);
-
-	e = HorizontalSum4(e);
-
-	return _mm_cvtsi128_si32(e);
-}
-
-static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH, int cvL, int cvH)
+static INLINED void PlanarPrepareOH(PlanarPrepared& prepared, const Surface& surface, int co, int chL, int chH)
 {
 	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
 
@@ -5760,31 +5485,61 @@ static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH
 	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
 	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
 
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
+	prepared.mmin0 = _mm_add_epi16(mmin0, mo0);
+	prepared.mmin1 = _mm_add_epi16(mmin1, mo1);
 
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
+	prepared.mmax0 = _mm_add_epi16(mmax0, mo0);
+	prepared.mmax1 = _mm_add_epi16(mmax1, mo1);
+}
 
-	//
+static INLINED void PlanarPrepareOV(PlanarPrepared& prepared, const Surface& surface, int co, int cvL, int cvH)
+{
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
 
-	__m128i mvL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvL - co), 0), 0);
-	__m128i mvH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvH - co), 0), 0);
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	__m128i mo0 = _mm_and_si128(mmask0, mo);
+	__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvL - co), 0), 0);
+	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvH - co), 0), 0);
 
 	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
 	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
 
-	__m128i mt0L = _mm_mullo_epi16(mvL, my0);
-	__m128i mt1L = _mm_mullo_epi16(mvL, my1);
+	__m128i mmin0 = _mm_mullo_epi16(mmin, my0);
+	__m128i mmin1 = _mm_mullo_epi16(mmin, my1);
 
-	mmin0 = _mm_add_epi16(mmin0, mt0L);
-	mmin1 = _mm_add_epi16(mmin1, mt1L);
+	__m128i mmax0 = _mm_mullo_epi16(mmax, my0);
+	__m128i mmax1 = _mm_mullo_epi16(mmax, my1);
 
-	__m128i mt0H = _mm_mullo_epi16(mvH, my0);
-	__m128i mt1H = _mm_mullo_epi16(mvH, my1);
+	prepared.mmin0 = _mm_add_epi16(mmin0, mo0);
+	prepared.mmin1 = _mm_add_epi16(mmin1, mo1);
 
-	mmax0 = _mm_add_epi16(mmax0, mt0H);
-	mmax1 = _mm_add_epi16(mmax1, mt1H);
+	prepared.mmax0 = _mm_add_epi16(mmax0, mo0);
+	prepared.mmax1 = _mm_add_epi16(mmax1, mo1);
+}
+
+static INLINED int PlanarStripeOH(const PlanarPrepared& prepared, const Surface& surface, int co, int chL, int chH)
+{
+	__m128i mhL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chL - co), 0), 0);
+	__m128i mhH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(chH - co), 0), 0);
+
+	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+	__m128i mt0L = _mm_mullo_epi16(mhL, mx0);
+	__m128i mt1L = _mm_mullo_epi16(mhL, mx1);
+
+	__m128i mmin0 = _mm_add_epi16(mt0L, prepared.mmin0);
+	__m128i mmin1 = _mm_add_epi16(mt1L, prepared.mmin1);
+
+	__m128i mt0H = _mm_mullo_epi16(mhH, mx0);
+	__m128i mt1H = _mm_mullo_epi16(mhH, mx1);
+
+	__m128i mmax0 = _mm_add_epi16(mt0H, prepared.mmax0);
+	__m128i mmax1 = _mm_add_epi16(mt1H, prepared.mmax1);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5795,18 +5550,62 @@ static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH
 	mmin0 = _mm_packus_epi16(mmin0, mmin1);
 	mmax0 = _mm_packus_epi16(mmax0, mmax1);
 
+	__m128i md = _mm_load_si128((const __m128i*)surface.Data_U8);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md), _mm_subs_epu8(md, mmax0));
+
 	__m128i mzero = _mm_setzero_si128();
 
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
+	__m128i e1 = _mm_unpackhi_epi8(e0, mzero);
+	e0 = _mm_unpacklo_epi8(e0, mzero);
 
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+	e0 = _mm_madd_epi16(e0, e0);
+	e1 = _mm_madd_epi16(e1, e1);
 
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+	__m128i e = _mm_add_epi32(e0, e1);
+
+	e = HorizontalSum4(e);
+
+	return _mm_cvtsi128_si32(e);
+}
+
+static INLINED int PlanarStripeOV(const PlanarPrepared& prepared, const Surface& surface, int co, int cvL, int cvH)
+{
+	__m128i mvL = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvL - co), 0), 0);
+	__m128i mvH = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cvH - co), 0), 0);
+
+	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+	__m128i mt0L = _mm_mullo_epi16(mvL, my0);
+	__m128i mt1L = _mm_mullo_epi16(mvL, my1);
+
+	__m128i mmin0 = _mm_add_epi16(mt0L, prepared.mmin0);
+	__m128i mmin1 = _mm_add_epi16(mt1L, prepared.mmin1);
+
+	__m128i mt0H = _mm_mullo_epi16(mvH, my0);
+	__m128i mt1H = _mm_mullo_epi16(mvH, my1);
+
+	__m128i mmax0 = _mm_add_epi16(mt0H, prepared.mmax0);
+	__m128i mmax1 = _mm_add_epi16(mt1H, prepared.mmax1);
+
+	mmin0 = _mm_srai_epi16(mmin0, 2);
+	mmin1 = _mm_srai_epi16(mmin1, 2);
+
+	mmax0 = _mm_srai_epi16(mmax0, 2);
+	mmax1 = _mm_srai_epi16(mmax1, 2);
+
+	mmin0 = _mm_packus_epi16(mmin0, mmin1);
+	mmax0 = _mm_packus_epi16(mmax0, mmax1);
+
+	__m128i md = _mm_load_si128((const __m128i*)surface.Data_U8);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md), _mm_subs_epu8(md, mmax0));
+
+	__m128i mzero = _mm_setzero_si128();
+
+	__m128i e1 = _mm_unpackhi_epi8(e0, mzero);
+	e0 = _mm_unpacklo_epi8(e0, mzero);
 
 	e0 = _mm_madd_epi16(e0, e0);
 	e1 = _mm_madd_epi16(e1, e1);
@@ -5820,19 +5619,11 @@ static INLINED int PlanarStripe(const Surface& surface, int co, int chL, int chH
 
 static INLINED int PlanarPyramidO(const Surface& surface, int c)
 {
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((c << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
 	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-c), 0), 0);
 	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - c), 0), 0);
 
-	__m128i mr0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mr1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+	__m128i mr0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+	__m128i mr1 = _mm_load_si128((const __m128i*)&surface.V[8]);
 
 	__m128i mmin0 = _mm_mullo_epi16(mmin, mr0);
 	__m128i mmin1 = _mm_mullo_epi16(mmin, mr1);
@@ -5840,11 +5631,13 @@ static INLINED int PlanarPyramidO(const Surface& surface, int c)
 	__m128i mmax0 = _mm_mullo_epi16(mmax, mr0);
 	__m128i mmax1 = _mm_mullo_epi16(mmax, mr1);
 
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
+	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((c << 2) + 2), 0), 0);
 
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
+	mmin0 = _mm_add_epi16(mmin0, mo);
+	mmin1 = _mm_add_epi16(mmin1, mo);
+
+	mmax0 = _mm_add_epi16(mmax0, mo);
+	mmax1 = _mm_add_epi16(mmax1, mo);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5858,6 +5651,12 @@ static INLINED int PlanarPyramidO(const Surface& surface, int c)
 	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
 	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
 
+	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+	e0 = _mm_and_si128(e0, mmask0);
+	e1 = _mm_and_si128(e1, mmask1);
+
 	e0 = _mm_madd_epi16(e0, e0);
 	e1 = _mm_madd_epi16(e1, e1);
 
@@ -5868,36 +5667,8 @@ static INLINED int PlanarPyramidO(const Surface& surface, int c)
 	return _mm_cvtsi128_si32(e);
 }
 
-static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
+static INLINED int PlanarPyramidOH(const PlanarPrepared& prepared, const Surface& surface, int co, int ch)
 {
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
-
-	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
-	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
-
-	__m128i mmin0 = _mm_mullo_epi16(mmin, my0);
-	__m128i mmin1 = _mm_mullo_epi16(mmin, my1);
-
-	__m128i mmax0 = _mm_mullo_epi16(mmax, my0);
-	__m128i mmax1 = _mm_mullo_epi16(mmax, my1);
-
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
-
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
-
-	//
-
 	__m128i mh = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(ch - co), 0), 0);
 
 	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
@@ -5906,11 +5677,11 @@ static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
 	__m128i mt0 = _mm_mullo_epi16(mh, mx0);
 	__m128i mt1 = _mm_mullo_epi16(mh, mx1);
 
-	mmin0 = _mm_add_epi16(mmin0, mt0);
-	mmin1 = _mm_add_epi16(mmin1, mt1);
+	__m128i mmin0 = _mm_add_epi16(mt0, prepared.mmin0);
+	__m128i mmin1 = _mm_add_epi16(mt1, prepared.mmin1);
 
-	mmax0 = _mm_add_epi16(mmax0, mt0);
-	mmax1 = _mm_add_epi16(mmax1, mt1);
+	__m128i mmax0 = _mm_add_epi16(mt0, prepared.mmax0);
+	__m128i mmax1 = _mm_add_epi16(mt1, prepared.mmax1);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5921,18 +5692,14 @@ static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
 	mmin0 = _mm_packus_epi16(mmin0, mmin1);
 	mmax0 = _mm_packus_epi16(mmax0, mmax1);
 
+	__m128i md = _mm_load_si128((const __m128i*)surface.Data_U8);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md), _mm_subs_epu8(md, mmax0));
+
 	__m128i mzero = _mm_setzero_si128();
 
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+	__m128i e1 = _mm_unpackhi_epi8(e0, mzero);
+	e0 = _mm_unpacklo_epi8(e0, mzero);
 
 	e0 = _mm_madd_epi16(e0, e0);
 	e1 = _mm_madd_epi16(e1, e1);
@@ -5944,36 +5711,8 @@ static INLINED int PlanarPyramidOH(const Surface& surface, int co, int ch)
 	return _mm_cvtsi128_si32(e);
 }
 
-static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
+static INLINED int PlanarPyramidOV(const PlanarPrepared& prepared, const Surface& surface, int co, int cv)
 {
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mmin = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(-co), 0), 0);
-	__m128i mmax = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(255 - co), 0), 0);
-
-	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
-
-	__m128i mmin0 = _mm_mullo_epi16(mmin, mx0);
-	__m128i mmin1 = _mm_mullo_epi16(mmin, mx1);
-
-	__m128i mmax0 = _mm_mullo_epi16(mmax, mx0);
-	__m128i mmax1 = _mm_mullo_epi16(mmax, mx1);
-
-	mmin0 = _mm_add_epi16(mmin0, mo0);
-	mmin1 = _mm_add_epi16(mmin1, mo1);
-
-	mmax0 = _mm_add_epi16(mmax0, mo0);
-	mmax1 = _mm_add_epi16(mmax1, mo1);
-
-	//
-
 	__m128i mv = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cv - co), 0), 0);
 
 	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
@@ -5982,11 +5721,11 @@ static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
 	__m128i mt0 = _mm_mullo_epi16(mv, my0);
 	__m128i mt1 = _mm_mullo_epi16(mv, my1);
 
-	mmin0 = _mm_add_epi16(mmin0, mt0);
-	mmin1 = _mm_add_epi16(mmin1, mt1);
+	__m128i mmin0 = _mm_add_epi16(mt0, prepared.mmin0);
+	__m128i mmin1 = _mm_add_epi16(mt1, prepared.mmin1);
 
-	mmax0 = _mm_add_epi16(mmax0, mt0);
-	mmax1 = _mm_add_epi16(mmax1, mt1);
+	__m128i mmax0 = _mm_add_epi16(mt0, prepared.mmax0);
+	__m128i mmax1 = _mm_add_epi16(mt1, prepared.mmax1);
 
 	mmin0 = _mm_srai_epi16(mmin0, 2);
 	mmin1 = _mm_srai_epi16(mmin1, 2);
@@ -5997,18 +5736,14 @@ static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
 	mmin0 = _mm_packus_epi16(mmin0, mmin1);
 	mmax0 = _mm_packus_epi16(mmax0, mmax1);
 
+	__m128i md = _mm_load_si128((const __m128i*)surface.Data_U8);
+
+	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md), _mm_subs_epu8(md, mmax0));
+
 	__m128i mzero = _mm_setzero_si128();
 
-	mmin1 = _mm_unpackhi_epi8(mmin0, mzero);
-	mmax1 = _mm_unpackhi_epi8(mmax0, mzero);
-	mmin0 = _mm_unpacklo_epi8(mmin0, mzero);
-	mmax0 = _mm_unpacklo_epi8(mmax0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_or_si128(_mm_subs_epu8(mmin0, md0), _mm_subs_epu8(md0, mmax0));
-	__m128i e1 = _mm_or_si128(_mm_subs_epu8(mmin1, md1), _mm_subs_epu8(md1, mmax1));
+	__m128i e1 = _mm_unpackhi_epi8(e0, mzero);
+	e0 = _mm_unpacklo_epi8(e0, mzero);
 
 	e0 = _mm_madd_epi16(e0, e0);
 	e1 = _mm_madd_epi16(e1, e1);
@@ -6020,65 +5755,6 @@ static INLINED int PlanarPyramidOV(const Surface& surface, int co, int cv)
 	return _mm_cvtsi128_si32(e);
 }
 
-static INLINED int PlanarPyramid(const Surface& surface, int co, int ch, int cv)
-{
-	__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
-
-	__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
-	__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
-
-	__m128i mo0 = _mm_and_si128(mmask0, mo);
-	__m128i mo1 = _mm_and_si128(mmask1, mo);
-
-	__m128i mh = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(ch - co), 0), 0);
-
-	__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
-	__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
-
-	__m128i mth0 = _mm_mullo_epi16(mx0, mh);
-	__m128i mth1 = _mm_mullo_epi16(mx1, mh);
-
-	mth0 = _mm_add_epi16(mth0, mo0);
-	mth1 = _mm_add_epi16(mth1, mo1);
-
-	//
-
-	__m128i mv = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cv - co), 0), 0);
-
-	__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
-	__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
-
-	__m128i mt0 = _mm_mullo_epi16(my0, mv);
-	__m128i mt1 = _mm_mullo_epi16(my1, mv);
-
-	mt0 = _mm_add_epi16(mt0, mth0);
-	mt1 = _mm_add_epi16(mt1, mth1);
-
-	mt0 = _mm_srai_epi16(mt0, 2);
-	mt1 = _mm_srai_epi16(mt1, 2);
-
-	mt0 = _mm_packus_epi16(mt0, mt1);
-
-	__m128i mzero = _mm_setzero_si128();
-
-	mt1 = _mm_unpackhi_epi8(mt0, mzero);
-	mt0 = _mm_unpacklo_epi8(mt0, mzero);
-
-	__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
-	__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
-
-	__m128i e0 = _mm_sub_epi16(mt0, md0);
-	__m128i e1 = _mm_sub_epi16(mt1, md1);
-
-	e0 = _mm_madd_epi16(e0, e0);
-	e1 = _mm_madd_epi16(e1, e1);
-
-	__m128i e = _mm_add_epi32(e0, e1);
-
-	e = HorizontalSum4(e);
-
-	return _mm_cvtsi128_si32(e);
-}
 
 static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight, int water)
 {
@@ -6144,23 +5820,26 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 		int co = nodesO[io].Color;
 
 		{
+			PlanarPrepared prepared;
+			PlanarPrepareOV(prepared, surface, co, 0, 255);
+
 			size_t w = 0;
 
 			for (int i = 0; i < 0x80; i += 0x20)
 			{
 				int ch = (i << 1) + (i >> 6);
 
-				int stripe32 = PlanarStripeOH(surface, co, ch, ch + (31 << 1));
+				int stripe32 = PlanarStripeOH(prepared, surface, co, ch, ch + (31 << 1));
 				if (stripe32 < best)
 				{
 					for (int j = 8; --j >= 0;)
 					{
-						int stripe4 = PlanarStripeOH(surface, co, ch, ch + (3 << 1));
+						int stripe4 = PlanarStripeOH(prepared, surface, co, ch, ch + (3 << 1));
 						if (stripe4 < best)
 						{
 							for (int k = 4; --k >= 0; ch += (1 << 1))
 							{
-								int err = PlanarPyramidOH(surface, co, ch);
+								int err = PlanarPyramidOH(prepared, surface, co, ch);
 
 								nodesH[w].Error = err;
 								nodesH[w].Color = ch;
@@ -6183,23 +5862,26 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 		}
 
 		{
+			PlanarPrepared prepared;
+			PlanarPrepareOH(prepared, surface, co, 0, 255);
+
 			size_t w = 0;
 
 			for (int i = 0; i < 0x80; i += 0x20)
 			{
 				int cv = (i << 1) + (i >> 6);
 
-				int stripe32 = PlanarStripeOV(surface, co, cv, cv + (31 << 1));
+				int stripe32 = PlanarStripeOV(prepared, surface, co, cv, cv + (31 << 1));
 				if (stripe32 < best)
 				{
 					for (int j = 8; --j >= 0;)
 					{
-						int stripe4 = PlanarStripeOV(surface, co, cv, cv + (3 << 1));
+						int stripe4 = PlanarStripeOV(prepared, surface, co, cv, cv + (3 << 1));
 						if (stripe4 < best)
 						{
 							for (int k = 4; --k >= 0; cv += (1 << 1))
 							{
-								int err = PlanarPyramidOV(surface, co, cv);
+								int err = PlanarPyramidOV(prepared, surface, co, cv);
 
 								nodesV[w].Error = err;
 								nodesV[w].Color = cv;
@@ -6231,6 +5913,28 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 
 			int ch = nodesH[ih].Color;
 
+			PlanarPrepared prepared;
+			PlanarPrepareOH(prepared, surface, co, ch & 0xF1, ch | 0x0E);
+
+			__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+			__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+			__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+			__m128i mo0 = _mm_and_si128(mmask0, mo);
+			__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+			__m128i mh = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(ch - co), 0), 0);
+
+			__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+			__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+			__m128i mth0 = _mm_mullo_epi16(mx0, mh);
+			__m128i mth1 = _mm_mullo_epi16(mx1, mh);
+
+			mth0 = _mm_add_epi16(mth0, mo0);
+			mth1 = _mm_add_epi16(mth1, mo1);
+
 			for (int iv = 0, nv = nodesV[0x80].Color; iv < nv; iv++)
 			{
 				int ev = nodesV[iv].Error;
@@ -6245,17 +5949,49 @@ static INLINED int Planar7(const Area& area, size_t offset, int c[3], int weight
 					int estimate = chunks[index];
 					if (estimate < 0)
 					{
-						int ch0 = ch & 0xF1;
-						int cv0 = cv & 0xF1;
-
-						estimate = PlanarStripe(surface, co, ch0, ch0 + (7 << 1), cv0, cv0 + (7 << 1));
+						estimate = PlanarStripeOV(prepared, surface, co, cv & 0xF1, cv | 0x0E);
 						chunks[index] = estimate;
 					}
 					if (estimate >= best)
 						continue;
 				}
 
-				int sum = PlanarPyramid(surface, co, ch, cv);
+				__m128i mv = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cv - co), 0), 0);
+
+				__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+				__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+				__m128i mt0 = _mm_mullo_epi16(my0, mv);
+				__m128i mt1 = _mm_mullo_epi16(my1, mv);
+
+				mt0 = _mm_add_epi16(mt0, mth0);
+				mt1 = _mm_add_epi16(mt1, mth1);
+
+				mt0 = _mm_srai_epi16(mt0, 2);
+				mt1 = _mm_srai_epi16(mt1, 2);
+
+				mt0 = _mm_packus_epi16(mt0, mt1);
+
+				__m128i mzero = _mm_setzero_si128();
+
+				mt1 = _mm_unpackhi_epi8(mt0, mzero);
+				mt0 = _mm_unpacklo_epi8(mt0, mzero);
+
+				__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+				__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+				__m128i e0 = _mm_sub_epi16(mt0, md0);
+				__m128i e1 = _mm_sub_epi16(mt1, md1);
+
+				e0 = _mm_madd_epi16(e0, e0);
+				e1 = _mm_madd_epi16(e1, e1);
+
+				__m128i e = _mm_add_epi32(e0, e1);
+
+				e = HorizontalSum4(e);
+
+				int sum = _mm_cvtsi128_si32(e);
+
 				if (best > sum)
 				{
 					best = sum;
@@ -6335,23 +6071,26 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 		int co = nodesO[io].Color;
 
 		{
+			PlanarPrepared prepared;
+			PlanarPrepareOV(prepared, surface, co, 0, 255);
+
 			size_t w = 0;
 
 			for (int i = 0; i < 0x40; i += 0x10)
 			{
 				int ch = (i << 2) + (i >> 4);
 
-				int stripe16 = PlanarStripeOH(surface, co, ch, ch + (15 << 2));
+				int stripe16 = PlanarStripeOH(prepared, surface, co, ch, ch + (15 << 2));
 				if (stripe16 < best)
 				{
 					for (int j = 4; --j >= 0;)
 					{
-						int stripe4 = PlanarStripeOH(surface, co, ch, ch + (3 << 2));
+						int stripe4 = PlanarStripeOH(prepared, surface, co, ch, ch + (3 << 2));
 						if (stripe4 < best)
 						{
 							for (int k = 4; --k >= 0; ch += (1 << 2))
 							{
-								int err = PlanarPyramidOH(surface, co, ch);
+								int err = PlanarPyramidOH(prepared, surface, co, ch);
 
 								nodesH[w].Error = err;
 								nodesH[w].Color = ch;
@@ -6374,23 +6113,26 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 		}
 
 		{
+			PlanarPrepared prepared;
+			PlanarPrepareOH(prepared, surface, co, 0, 255);
+
 			size_t w = 0;
 
 			for (int i = 0; i < 0x40; i += 0x10)
 			{
 				int cv = (i << 2) + (i >> 4);
 
-				int stripe16 = PlanarStripeOV(surface, co, cv, cv + (15 << 2));
+				int stripe16 = PlanarStripeOV(prepared, surface, co, cv, cv + (15 << 2));
 				if (stripe16 < best)
 				{
 					for (int j = 4; --j >= 0;)
 					{
-						int stripe4 = PlanarStripeOV(surface, co, cv, cv + (3 << 2));
+						int stripe4 = PlanarStripeOV(prepared, surface, co, cv, cv + (3 << 2));
 						if (stripe4 < best)
 						{
 							for (int k = 4; --k >= 0; cv += (1 << 2))
 							{
-								int err = PlanarPyramidOV(surface, co, cv);
+								int err = PlanarPyramidOV(prepared, surface, co, cv);
 
 								nodesV[w].Error = err;
 								nodesV[w].Color = cv;
@@ -6422,6 +6164,28 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 
 			int ch = nodesH[ih].Color;
 
+			PlanarPrepared prepared;
+			PlanarPrepareOH(prepared, surface, co, ch & 0xF3, ch | 0x0C);
+
+			__m128i mo = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128((co << 2) + 2), 0), 0);
+
+			__m128i mmask0 = _mm_load_si128((const __m128i*)&surface.Mask[0]);
+			__m128i mmask1 = _mm_load_si128((const __m128i*)&surface.Mask[8]);
+
+			__m128i mo0 = _mm_and_si128(mmask0, mo);
+			__m128i mo1 = _mm_and_si128(mmask1, mo);
+
+			__m128i mh = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(ch - co), 0), 0);
+
+			__m128i mx0 = _mm_load_si128((const __m128i*)&surface.U[0]);
+			__m128i mx1 = _mm_load_si128((const __m128i*)&surface.U[8]);
+
+			__m128i mth0 = _mm_mullo_epi16(mx0, mh);
+			__m128i mth1 = _mm_mullo_epi16(mx1, mh);
+
+			mth0 = _mm_add_epi16(mth0, mo0);
+			mth1 = _mm_add_epi16(mth1, mo1);
+
 			for (int iv = 0, nv = nodesV[0x40].Color; iv < nv; iv++)
 			{
 				int ev = nodesV[iv].Error;
@@ -6436,17 +6200,49 @@ static INLINED int Planar6(const Area& area, size_t offset, int c[3], int weight
 					int estimate = chunks[index];
 					if (estimate < 0)
 					{
-						int ch0 = ch & 0xF3;
-						int cv0 = cv & 0xF3;
-
-						estimate = PlanarStripe(surface, co, ch0, ch0 + (3 << 2), cv0, cv0 + (3 << 2));
+						estimate = PlanarStripeOV(prepared, surface, co, cv & 0xF3, cv | 0x0C);
 						chunks[index] = estimate;
 					}
 					if (estimate >= best)
 						continue;
 				}
 
-				int sum = PlanarPyramid(surface, co, ch, cv);
+				__m128i mv = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_cvtsi32_si128(cv - co), 0), 0);
+
+				__m128i my0 = _mm_load_si128((const __m128i*)&surface.V[0]);
+				__m128i my1 = _mm_load_si128((const __m128i*)&surface.V[8]);
+
+				__m128i mt0 = _mm_mullo_epi16(my0, mv);
+				__m128i mt1 = _mm_mullo_epi16(my1, mv);
+
+				mt0 = _mm_add_epi16(mt0, mth0);
+				mt1 = _mm_add_epi16(mt1, mth1);
+
+				mt0 = _mm_srai_epi16(mt0, 2);
+				mt1 = _mm_srai_epi16(mt1, 2);
+
+				mt0 = _mm_packus_epi16(mt0, mt1);
+
+				__m128i mzero = _mm_setzero_si128();
+
+				mt1 = _mm_unpackhi_epi8(mt0, mzero);
+				mt0 = _mm_unpacklo_epi8(mt0, mzero);
+
+				__m128i md0 = _mm_load_si128((const __m128i*)&surface.Data[0]);
+				__m128i md1 = _mm_load_si128((const __m128i*)&surface.Data[8]);
+
+				__m128i e0 = _mm_sub_epi16(mt0, md0);
+				__m128i e1 = _mm_sub_epi16(mt1, md1);
+
+				e0 = _mm_madd_epi16(e0, e0);
+				e1 = _mm_madd_epi16(e1, e1);
+
+				__m128i e = _mm_add_epi32(e0, e1);
+
+				e = HorizontalSum4(e);
+
+				int sum = _mm_cvtsi128_si32(e);
+
 				if (best > sum)
 				{
 					best = sum;
@@ -6668,6 +6464,10 @@ static INLINED void FilterPixelsColor16(Area& area, uint64_t order)
 
 		int a = _mm_extract_epi16(m, 6);
 
+#ifdef OPTION_LINEAR
+		m = _mm_insert_epi16(m, 0, 6);
+#endif
+
 		_mm_store_si128((__m128i*)&area.Data[w * 4], m);
 
 		area.Shift[w] = order & 0xF;
@@ -6716,6 +6516,8 @@ static int CompressBlockColorEnhanced(uint8_t output[8], const uint8_t* __restri
 
 	FilterPixelsColor16(area, 0xFB73EA62D951C840uLL);
 
+	DeriveData(area.Data, area.DataGRB, area.DataGR, area.DataGB, area.Count);
+
 	int err = input_error;
 	if (err > 0)
 	{
@@ -6754,7 +6556,7 @@ public:
 	class Item
 	{
 	public:
-		uint8_t* _Output;
+		uint8_t * _Output;
 		uint8_t* _Cell;
 
 		Item()
@@ -6771,7 +6573,7 @@ public:
 	class Job
 	{
 	public:
-		Job* _Next;
+		Job * _Next;
 
 	protected:
 		int _Count, _Index;
@@ -6886,7 +6688,7 @@ public:
 	}
 
 protected:
-	Job* Take()
+	Job * Take()
 	{
 		Lock();
 
@@ -6953,7 +6755,7 @@ protected:
 				while (Item* item = job->Take())
 				{
 					alignas(16) uint8_t temp[4 * 4 * 4];
-					DecompressBlockColor(item->_Output, temp, 4 * 4);
+					DecompressBlockColorEnhanced(item->_Output, temp, 4 * 4);
 
 					int input_error = CompareBlocksColor(item->_Cell, Stride, temp, 4 * 4);
 					if (input_error > 0)
@@ -6965,7 +6767,7 @@ protected:
 						}
 						mse += input_error;
 
-						DecompressBlockColor(item->_Output, temp, 4 * 4);
+						DecompressBlockColorEnhanced(item->_Output, temp, 4 * 4);
 						ssim += CompareBlocksColorSSIM(item->_Cell, Stride, temp, 4 * 4);
 					}
 					else
@@ -6978,7 +6780,7 @@ protected:
 			case PackMode::DecompressColorEnhanced:
 				while (Item* item = job->Take())
 				{
-					DecompressBlockColor(item->_Output, item->_Cell, Stride);
+					DecompressBlockColorEnhanced(item->_Output, item->_Cell, Stride);
 				}
 				break;
 			}
