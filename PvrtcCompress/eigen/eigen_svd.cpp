@@ -1,4 +1,5 @@
 
+// Warning: SSE4 and AVX2 produce different results
 #include "SVD" // Eigen 3.3.3 is required
 
 template<int R, int C>

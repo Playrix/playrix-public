@@ -2,9 +2,13 @@
 // PVS-Studio Static Code Analyzer for C, C++ and C#: http://www.viva64.com
 // --------------------------------------------------------------------------------
 //
-// Copyright(c) 2017 Playrix LLC
+// Copyright(c) 2017-present Playrix LLC
 //
 // LICENSE: https://mit-license.org
+
+//#define OPTION_AVX2
+//#define OPTION_LINEAR
+//#define OPTION_SLOWPOKE
 
 #ifdef WIN32
 #include <windows.h>
@@ -18,7 +22,14 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
+#ifndef OPTION_SLOWPOKE
 #include <smmintrin.h> // SSE4.1
+#else
+#include <emmintrin.h> // SSE2
+#endif
+#ifdef OPTION_AVX2
+#include <immintrin.h> // AVX2
+#endif
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -38,18 +49,31 @@
 #define M128I_I32(mm, index) (reinterpret_cast<int32_t(&)[4]>(mm)[index])
 #endif
 
+#ifndef OPTION_LINEAR
+
 // http://www.brucelindbloom.com/index.html?WorkingSpaceInfo.html Apple RGB
 enum { kAlpha = 1000, kGreen = 672, kRed = 245, kBlue = 83 };
 
+#else
+
 // Linear RGB
-//enum { kAlpha = 3, kGreen = 1, kRed = 1, kBlue = 1 };
+enum { kAlpha = 3, kGreen = 1, kRed = 1, kBlue = 1 };
+
+#endif
 
 enum { kColor = kGreen + kRed + kBlue, kCapacity = 2048 >> 2, kStep = 8 };
 
-alignas(16) static const int g_AGRB[4] = { kAlpha, kGreen, kRed, kBlue };
+#ifndef OPTION_AVX2
 
 alignas(16) static const short g_AGRB_I16[8] = { kAlpha, kGreen, kRed, kBlue, kAlpha, kGreen, kRed, kBlue };
-alignas(16) static const short g_Transparent2_I16[8] = { 0, -1, -1, -1, 0, -1, -1, -1 };
+alignas(16) static const short g_Transparent_I16[8] = { 0, -1, -1, -1, 0, -1, -1, -1 };
+
+#else
+
+alignas(32) static const short g_AGRB_I16[16] = { kAlpha, kGreen, kRed, kBlue, kAlpha, kGreen, kRed, kBlue, kAlpha, kGreen, kRed, kBlue, kAlpha, kGreen, kRed, kBlue };
+alignas(32) static const short g_Transparent_I16[16] = { 0, -1, -1, -1, 0, -1, -1, -1, 0, -1, -1, -1, 0, -1, -1, -1 };
+
+#endif
 
 // (m2,m1,m3,m0)
 static const uint32_t g_selection0312[0x10] =
@@ -57,6 +81,100 @@ static const uint32_t g_selection0312[0x10] =
 	3, 0, 3, 0, 1, 0, 1, 0,
 	2, 0, 2, 0, 1, 0, 1, 0
 };
+
+#ifdef OPTION_SLOWPOKE
+
+#undef _mm_hadd_epi32
+#define _mm_hadd_epi32 emu_hadd_epi32
+
+static INLINED __m128i emu_hadd_epi32(__m128i a, __m128i b)
+{
+	a = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 0, 3, 1));
+	b = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 0, 3, 1));
+
+	__m128i c = _mm_unpacklo_epi64(a, b);
+	__m128i d = _mm_unpackhi_epi64(a, b);
+
+	return _mm_add_epi32(c, d);
+}
+
+#undef _mm_cvtepu8_epi16
+#define _mm_cvtepu8_epi16 emu_cvtepu8_epi16
+
+static INLINED __m128i emu_cvtepu8_epi16(__m128i a)
+{
+	return _mm_unpacklo_epi8(a, _mm_setzero_si128());
+}
+
+#undef _mm_cvtepu8_epi32
+#define _mm_cvtepu8_epi32 emu_cvtepu8_epi32
+
+static INLINED __m128i emu_cvtepu8_epi32(__m128i a)
+{
+	__m128i zero = _mm_setzero_si128();
+	a = _mm_unpacklo_epi8(a, zero);
+	return _mm_unpacklo_epi16(a, zero);
+}
+
+#undef _mm_cvtepi8_epi16
+#define _mm_cvtepi8_epi16 emu_cvtepi8_epi16_mask
+
+static INLINED __m128i emu_cvtepi8_epi16_mask(__m128i a)
+{
+	return _mm_unpacklo_epi8(a, a);
+}
+
+#undef _mm_min_epi32
+#define _mm_min_epi32 emu_min_epi32
+
+static INLINED __m128i emu_min_epi32(__m128i a, __m128i b)
+{
+	__m128i mask = _mm_cmplt_epi32(a, b);
+	return _mm_or_si128(_mm_and_si128(a, mask), _mm_andnot_si128(mask, b));
+}
+
+#undef  _mm_mullo_epi32
+#define _mm_mullo_epi32 emu_mullo_epi32
+
+static INLINED __m128i emu_mullo_epi32(__m128i a, __m128i b)
+{
+	__m128i c = _mm_mul_epu32(a, b);
+	a = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 3, 0, 1));
+	b = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 3, 0, 1));
+	__m128i d = _mm_mul_epu32(a, b);
+	c = _mm_shuffle_epi32(c, _MM_SHUFFLE(2, 0, 2, 0));
+	d = _mm_shuffle_epi32(d, _MM_SHUFFLE(2, 0, 2, 0));
+	return _mm_unpacklo_epi32(c, d);
+}
+
+#undef  _mm_blendv_epi8
+#define _mm_blendv_epi8 emu_blendv_epi8
+
+static INLINED __m128i emu_blendv_epi8(__m128i a, __m128i b, __m128i mask)
+{
+	return _mm_or_si128(_mm_and_si128(b, mask), _mm_andnot_si128(mask, a));
+}
+
+#undef  _mm_blend_epi16
+#define _mm_blend_epi16 emu_blend_epi16
+
+static INLINED __m128i emu_blend_epi16(__m128i a, __m128i b, int imm8)
+{
+	__m128i mask = _mm_set_epi16(
+		(imm8 & 0x80) ? -1 : 0,
+		(imm8 & 0x40) ? -1 : 0,
+		(imm8 & 0x20) ? -1 : 0,
+		(imm8 & 0x10) ? -1 : 0,
+		(imm8 & 8) ? -1 : 0,
+		(imm8 & 4) ? -1 : 0,
+		(imm8 & 2) ? -1 : 0,
+		(imm8 & 1) ? -1 : 0
+	);
+
+	return emu_blendv_epi8(a, b, mask);
+}
+
+#endif
 
 static INLINED int Sqr(int x)
 {
@@ -112,10 +230,23 @@ static INLINED __m128i HorizontalMinimum4(__m128i me4)
 	return me1;
 }
 
+#ifdef OPTION_AVX2
+
+static INLINED __m256i HorizontalMinimum4(__m256i me4)
+{
+	__m256i me2 = _mm256_min_epi32(me4, _mm256_shuffle_epi32(me4, _MM_SHUFFLE(2, 3, 0, 1)));
+	__m256i me1 = _mm256_min_epi32(me2, _mm256_shuffle_epi32(me2, _MM_SHUFFLE(0, 1, 2, 3)));
+	return me1;
+}
+
+#endif
+
+
 static int Stride;
 
 static int* _Image;
 static ptrdiff_t _ImageToMaskDelta;
+static ptrdiff_t _ImageToBiasDelta;
 static int _Size;
 static int _Mask;
 
@@ -469,7 +600,7 @@ public:
 		}
 	}
 
-	INLINED void Resolve(float AB[C], const float P[R])
+	INLINED void Resolve(float AB[C], const float P[R]) const
 	{
 		for (int i = 0; i < C; i++)
 		{
@@ -639,6 +770,19 @@ static void SavePvrtc(const char* name, const uint8_t* buffer, int size)
 
 #endif
 
+static INLINED void FullMask(uint8_t* mask_agrb, int src_s)
+{
+	for (int y = 0; y < src_s; y++)
+	{
+		int* w = (int*)&mask_agrb[y * Stride];
+
+		for (int x = 0; x < src_s; x++)
+		{
+			w[x] = -1;
+		}
+	}
+}
+
 static INLINED void ComputeAlphaMaskWithOutline(uint8_t* mask_agrb, const uint8_t* src_bgra, int src_s, int radius)
 {
 	int full_s = 1 + radius + src_s + radius;
@@ -728,8 +872,10 @@ static const double g_ssim_16k2L = g_ssim_16k1L * 9;
 #define SSIM_FINAL(dst, p1, p2) \
 	__m128d dst; \
 	{ \
-		__m128d mp1 = _mm_load1_pd(&p1); \
-		__m128d mp2 = _mm_load1_pd(&p2); \
+		__m128d mp1 = _mm_load_sd(&p1); \
+		__m128d mp2 = _mm_load_sd(&p2); \
+		mp1 = _mm_shuffle_pd(mp1, mp1, 0); \
+		mp2 = _mm_shuffle_pd(mp2, mp2, 0); \
 		dst = _mm_div_pd( \
 			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasb), mp1), _mm_add_pd(_mm_cvtepi32_pd(sab), mp2)), \
 			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasa_sbsb), mp1), _mm_add_pd(_mm_cvtepi32_pd(saa_sbb), mp2))); \
@@ -783,6 +929,31 @@ struct Block
 	INLINED void Save(uint8_t output[8]) const
 	{
 		memcpy(output, Data, 8);
+	}
+
+	INLINED void InitBias()
+	{
+		__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB_I16);
+
+		for (int y = 0; y < 4; y++)
+		{
+			const uint32_t* source = (const uint32_t*)&_Image[((Y << 2) + y) * _Size + (X << 2)];
+			const int32_t* mask = (const int32_t*)((const uint8_t*)source + _ImageToMaskDelta);
+
+			int32_t* bias = (int32_t*)((const uint8_t*)source + _ImageToBiasDelta);
+
+			for (int x = 0; x < 4; x++)
+			{
+				__m128i mmask = _mm_cvtepi8_epi16(_mm_cvtsi32_si128(mask[x]));
+
+				__m128i mbias = _mm_and_si128(magrb, mmask);
+
+				mbias = _mm_add_epi16(mbias, _mm_shufflelo_epi16(mbias, _MM_SHUFFLE(2, 3, 0, 1)));
+				mbias = _mm_add_epi16(mbias, _mm_shufflelo_epi16(mbias, _MM_SHUFFLE(0, 1, 2, 3)));
+
+				bias[x] = (_mm_cvtsi128_si32(mbias) & 0x7FFF) * 0x8000;
+			}
+		}
 	}
 
 	INLINED void CheckEmpty()
@@ -930,7 +1101,8 @@ struct Block
 			int b = MakeColor5(M128I_I16(Colors, 3));
 
 			int b1 = MakeColor4(b);
-			int e1 = Sqr(ExpandColor5(b) - ExpandColor5(b1)) * kBlue + Sqr(ExpandAlpha4(a) - 0xFF) * kAlpha;
+			int e1 = Sqr(ExpandColor5(b) - ExpandColor5(b1)) * kBlue +
+				Sqr(ExpandAlpha4(a) - 0xFF) * kAlpha;
 
 			if (e1 <= 0)
 			{
@@ -967,22 +1139,29 @@ struct Block
 
 			int e1 = Sqr(ExpandAlpha4(a) - 0xFF) * kAlpha;
 
-			int r0 = MakeColor4(r);
-			int g0 = MakeColor4(g);
-			int b0 = MakeColor4(b);
-			int a0 = MakeAlpha3(a);
-			int e0 = Sqr(ExpandColor5(r) - ExpandColor5(r0)) * kRed +
-				Sqr(ExpandColor5(g) - ExpandColor5(g0)) * kGreen +
-				Sqr(ExpandColor5(b) - ExpandColor5(b0)) * kBlue +
-				Sqr(ExpandAlpha4(a) - ExpandAlpha4(a0)) * kAlpha;
-
-			if (e1 <= e0)
+			if (e1 <= 0)
 			{
 				colorB = (1 << 15) | (r << 10) | (g << 5) | b;
 			}
 			else
 			{
-				colorB = (a0 << 11) | ((r0 & 0x1E) << 7) | ((g0 & 0x1E) << 3) | ((b0 & 0x1E) >> 1);
+				int r0 = MakeColor4(r);
+				int g0 = MakeColor4(g);
+				int b0 = MakeColor4(b);
+				int a0 = MakeAlpha3(a);
+				int e0 = Sqr(ExpandColor5(r) - ExpandColor5(r0)) * kRed +
+					Sqr(ExpandColor5(g) - ExpandColor5(g0)) * kGreen +
+					Sqr(ExpandColor5(b) - ExpandColor5(b0)) * kBlue +
+					Sqr(ExpandAlpha4(a) - ExpandAlpha4(a0)) * kAlpha;
+
+				if (e1 <= e0)
+				{
+					colorB = (1 << 15) | (r << 10) | (g << 5) | b;
+				}
+				else
+				{
+					colorB = (a0 << 11) | ((r0 & 0x1E) << 7) | ((g0 & 0x1E) << 3) | ((b0 & 0x1E) >> 1);
+				}
 			}
 		}
 
@@ -1167,6 +1346,59 @@ struct Block
 		return _mm_blend_epi16(mC, ma, 0x11);
 	}
 
+#ifdef OPTION_AVX2
+
+	INLINED static __m256i Macro_InterpolateCX(__m256i mD, __m256i mV, int x)
+	{
+		__m256i mC;
+
+		switch (x ^ 2)
+		{
+		case 3:
+			mC = _mm256_add_epi16(mD, mV);
+			break;
+
+		case 2:
+			mC = _mm256_add_epi16(_mm256_slli_epi16(mD, 1), mV);
+			break;
+
+		case 1:
+			mC = _mm256_add_epi16(mD, mV);
+			break;
+
+		default:
+			mC = mV;
+			break;
+		}
+
+		return mC;
+	}
+
+	INLINED static void Macro_InterpolateCX_Pair(__m256i mD, __m256i mV, __m256i& mC0, __m256i& mC1, int x)
+	{
+		mC1 = _mm256_add_epi16(mD, mV);
+
+		if ((x ^ 2) < 2)
+		{
+			mC0 = mV;
+		}
+		else
+		{
+			mC0 = _mm256_add_epi16(mD, mC1);
+		}
+	}
+
+	INLINED static __m256i Macro_ExpandC(__m256i mC)
+	{
+		__m256i ma = _mm256_add_epi16(_mm256_srai_epi16(mC, 4), mC);
+
+		mC = _mm256_add_epi16(_mm256_srai_epi16(mC, 1), _mm256_srai_epi16(mC, 5 + 1));
+
+		return _mm256_blend_epi16(mC, ma, 0x11);
+	}
+
+#endif
+
 	INLINED static void Interpolate2x2(__m128i interpolation[4][4], const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x)
 	{
 		__m128i mDL, mDR, mVL, mVR;
@@ -1300,19 +1532,21 @@ struct Block
 		}
 	}
 
-	INLINED static void FastPackOpaqueTransparentPixel_Pair(const __m128i interpolation[4][4], const int& p, uint32_t& codesO, uint32_t& codesT, int y, int x, int shift, int& sumO, int& sumT)
+#ifndef OPTION_AVX2
+
+	INLINED static void PackOpaqueTransparent_Pair(const __m128i interpolation[4][4], const int& p, uint32_t& codesO, uint32_t& codesT, int y, int x, int shift, int& sumO, int& sumT)
 	{
 		__m128i mCx = _mm_load_si128(&interpolation[y][x + 0]);
 		__m128i mCy = _mm_load_si128(&interpolation[y][x + 1]);
-
-		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
-		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
 
 		__m128i mc = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)&p));
 
 		__m128i mmask = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)&p + _ImageToMaskDelta)));
 
 		//
+
+		__m128i mA = _mm_unpacklo_epi64(mCx, mCy);
+		__m128i mB = _mm_unpackhi_epi64(mCx, mCy);
 
 		mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
 		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
@@ -1322,7 +1556,7 @@ struct Block
 		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
 
 		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent2_I16));
+		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent_I16));
 
 		mA = _mm_sub_epi16(mA, mc);
 		mB = _mm_sub_epi16(mB, mc);
@@ -1331,7 +1565,7 @@ struct Block
 		mAT = _mm_sub_epi16(mAT, mc);
 		mBT = _mm_sub_epi16(mBT, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		mA = _mm_mullo_epi16(mA, mA);
 		mB = _mm_mullo_epi16(mB, mB);
@@ -1342,12 +1576,12 @@ struct Block
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-		mBT = _mm_min_epu16(mBT, mlimit);
+		mA = _mm_xor_si128(mA, msign);
+		mB = _mm_xor_si128(mB, msign);
+		mAC = _mm_xor_si128(mAC, msign);
+		mBC = _mm_xor_si128(mBC, msign);
+		mAT = _mm_xor_si128(mAT, msign);
+		mBT = _mm_xor_si128(mBT, msign);
 
 		mA = _mm_madd_epi16(mA, magrb);
 		mB = _mm_madd_epi16(mB, magrb);
@@ -1356,9 +1590,16 @@ struct Block
 		mAT = _mm_madd_epi16(mAT, magrb);
 		mBT = _mm_madd_epi16(mBT, magrb);
 
+		__m128i mbias = _mm_loadl_epi64((const __m128i*)((const uint8_t*)&p + _ImageToBiasDelta));
+		mbias = _mm_unpacklo_epi64(mbias, mbias);
+
 		__m128i m2 = _mm_hadd_epi32(mA, mB);
 		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
 		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
+
+		m2 = _mm_add_epi32(m2, mbias);
+		m2C = _mm_add_epi32(m2C, mbias);
+		m2T = _mm_add_epi32(m2T, mbias);
 
 		m2 = _mm_shuffle_epi32(m2, _MM_SHUFFLE(3, 1, 2, 0));
 		m2C = _mm_shuffle_epi32(m2C, _MM_SHUFFLE(3, 1, 2, 0));
@@ -1399,139 +1640,167 @@ struct Block
 		}
 	}
 
-	INLINED static void PackOpaqueTransparentPixel(const __m128i interpolation[4][4], const int& p, uint32_t& codesO, uint32_t& codesT, int y, int x, int shift, int& sumO, int& sumT)
+#else
+
+	INLINED static void PackOpaqueTransparent_Quad(const __m128i interpolation[4][4], const int& p, uint32_t& codesO, uint32_t& codesT, int y, int shift, int& sumO, int& sumT)
 	{
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(p));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
+		__m128i mCx = _mm_load_si128(&interpolation[y][0]);
+		__m128i mCy = _mm_load_si128(&interpolation[y][1]);
 
-		__m128i mA = _mm_load_si128(&interpolation[y][x]);
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
+		__m256i vCzx = _mm256_inserti128_si256(_mm256_castsi128_si256(mCx), _mm_load_si128(&interpolation[y][2]), 1);
+		__m256i vCwy = _mm256_inserti128_si256(_mm256_castsi128_si256(mCy), _mm_load_si128(&interpolation[y][3]), 1);
 
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
+		__m256i vA = _mm256_unpacklo_epi64(vCzx, vCwy);
+		__m256i vB = _mm256_unpackhi_epi64(vCzx, vCwy);
 
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
+		__m256i vc = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*)&p));
 
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_insert_epi16(mAT, 0, 0);
+		__m256i vmask = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)((const uint8_t*)&p + _ImageToMaskDelta)));
 
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-		mBT = _mm_sub_epi16(mBT, mc);
+		//
 
-		__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB);
+		vc = _mm256_shufflelo_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+		vc = _mm256_shufflehi_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
 
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-		mBT = _mm_mullo_epi16(mBT, mBT);
+		__m256i vBA = _mm256_sub_epi16(vB, vA);
+		__m256i vAC = _mm256_add_epi16(_mm256_srai_epi16(_mm256_add_epi16(_mm256_slli_epi16(vBA, 1), vBA), 3), vA);
+		__m256i vBC = _mm256_add_epi16(_mm256_srai_epi16(_mm256_add_epi16(_mm256_slli_epi16(vBA, 2), vBA), 3), vA);
 
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)&p + _ImageToMaskDelta))));
+		__m256i vAT = _mm256_srai_epi16(_mm256_add_epi16(vA, vB), 1);
+		__m256i vBT = _mm256_and_si256(vAT, _mm256_load_si256((const __m256i*)g_Transparent_I16));
 
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAC = _mm_mullo_epi32(mAC, magrb);
-		mBC = _mm_mullo_epi32(mBC, magrb);
-		mAT = _mm_mullo_epi32(mAT, magrb);
-		mBT = _mm_mullo_epi32(mBT, magrb);
+		vA = _mm256_sub_epi16(vA, vc);
+		vB = _mm256_sub_epi16(vB, vc);
+		vAC = _mm256_sub_epi16(vAC, vc);
+		vBC = _mm256_sub_epi16(vBC, vc);
+		vAT = _mm256_sub_epi16(vAT, vc);
+		vBT = _mm256_sub_epi16(vBT, vc);
 
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
+		__m256i vsign = _mm256_broadcastd_epi32(_mm_cvtsi64_si128(0x80008000LL));
+
+		vA = _mm256_mullo_epi16(vA, vA);
+		vB = _mm256_mullo_epi16(vB, vB);
+		vAC = _mm256_mullo_epi16(vAC, vAC);
+		vBC = _mm256_mullo_epi16(vBC, vBC);
+		vAT = _mm256_mullo_epi16(vAT, vAT);
+		vBT = _mm256_mullo_epi16(vBT, vBT);
+
+		__m256i vagrb = _mm256_and_si256(vmask, _mm256_load_si256((const __m256i*)g_AGRB_I16));
+
+		vA = _mm256_xor_si256(vA, vsign);
+		vB = _mm256_xor_si256(vB, vsign);
+		vAC = _mm256_xor_si256(vAC, vsign);
+		vBC = _mm256_xor_si256(vBC, vsign);
+		vAT = _mm256_xor_si256(vAT, vsign);
+		vBT = _mm256_xor_si256(vBT, vsign);
+
+		vA = _mm256_madd_epi16(vA, vagrb);
+		vB = _mm256_madd_epi16(vB, vagrb);
+		vAC = _mm256_madd_epi16(vAC, vagrb);
+		vBC = _mm256_madd_epi16(vBC, vagrb);
+		vAT = _mm256_madd_epi16(vAT, vagrb);
+		vBT = _mm256_madd_epi16(vBT, vagrb);
+
+		__m128i mbias = _mm_loadu_si128((const __m128i*)((const uint8_t*)&p + _ImageToBiasDelta));
+		__m256i vbias = _mm256_permute4x64_epi64(_mm256_castsi128_si256(mbias), _MM_SHUFFLE(1, 1, 0, 0));
+
+		__m256i v2 = _mm256_hadd_epi32(vA, vB);
+		__m256i v2C = _mm256_hadd_epi32(vAC, vBC);
+		__m256i v2T = _mm256_hadd_epi32(vAT, vBT);
+
+		v2 = _mm256_add_epi32(v2, vbias);
+		v2C = _mm256_add_epi32(v2C, vbias);
+		v2T = _mm256_add_epi32(v2T, vbias);
+
+		v2 = _mm256_shuffle_epi32(v2, _MM_SHUFFLE(3, 1, 2, 0));
+		v2C = _mm256_shuffle_epi32(v2C, _MM_SHUFFLE(3, 1, 2, 0));
+		v2T = _mm256_shuffle_epi32(v2T, _MM_SHUFFLE(3, 1, 2, 0));
 
 		{
-			__m128i me4 = _mm_hadd_epi32(m2, m2C);
-			__m128i me1 = HorizontalMinimum4(me4);
+			__m256i ve4 = _mm256_unpacklo_epi64(v2, v2C);
+			__m256i ve1 = HorizontalMinimum4(ve4);
 
-			codesO |= g_selection0312[(uint32_t)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(me4, me1)))] << shift;
+			uint32_t cmp = (uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(ve4, ve1)));
+			codesO |= g_selection0312[cmp & 0xFu] << shift;
+			codesO |= g_selection0312[cmp >> 4] << (shift + 4);
 
-			sumO += _mm_cvtsi128_si32(me1);
+			sumO += _mm_cvtsi128_si32(_mm_add_epi32(_mm256_castsi256_si128(ve1), _mm256_extracti128_si256(ve1, 1)));
 		}
 		{
-			__m128i me4 = _mm_hadd_epi32(m2, m2T);
-			__m128i me1 = HorizontalMinimum4(me4);
+			__m256i ve4 = _mm256_unpacklo_epi64(v2, v2T);
+			__m256i ve1 = HorizontalMinimum4(ve4);
 
-			codesT |= g_selection0312[(uint32_t)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(me4, me1)))] << shift;
+			uint32_t cmp = (uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(ve4, ve1)));
+			codesT |= g_selection0312[cmp & 0xFu] << shift;
+			codesT |= g_selection0312[cmp >> 4] << (shift + 4);
 
-			sumT += _mm_cvtsi128_si32(me1);
+			sumT += _mm_cvtsi128_si32(_mm_add_epi32(_mm256_castsi256_si128(ve1), _mm256_extracti128_si256(ve1, 1)));
+		}
+
+		{
+			__m256i ve4 = _mm256_unpackhi_epi64(v2, v2C);
+			__m256i ve1 = HorizontalMinimum4(ve4);
+
+			uint32_t cmp = (uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(ve4, ve1)));
+			codesO |= g_selection0312[cmp & 0xFu] << (shift + 2);
+			codesO |= g_selection0312[cmp >> 4] << (shift + 6);
+
+			sumO += _mm_cvtsi128_si32(_mm_add_epi32(_mm256_castsi256_si128(ve1), _mm256_extracti128_si256(ve1, 1)));
+		}
+		{
+			__m256i ve4 = _mm256_unpackhi_epi64(v2, v2T);
+			__m256i ve1 = HorizontalMinimum4(ve4);
+
+			uint32_t cmp = (uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(ve4, ve1)));
+			codesT |= g_selection0312[cmp & 0xFu] << (shift + 2);
+			codesT |= g_selection0312[cmp >> 4] << (shift + 6);
+
+			sumT += _mm_cvtsi128_si32(_mm_add_epi32(_mm256_castsi256_si128(ve1), _mm256_extracti128_si256(ve1, 1)));
 		}
 	}
 
+#endif
 
 	INLINED void PackOpaqueTransparent4x4(const __m128i interpolation[4][4], int& errorO, uint32_t& answerO, int& errorT, uint32_t& answerT) const
 	{
-		if (Error < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-		{
-			const int* source = &_Image[(Y << 2) * _Size + (X << 2)];
-
-			uint32_t codesO = 0, codesT = 0;
-			int sumO = 0, sumT = 0;
-
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[0], codesO, codesT, 0, 0, 0, sumO, sumT);
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[2], codesO, codesT, 0, 2, 4, sumO, sumT);
-
-			source += _Size;
-
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[0], codesO, codesT, 1, 0, 8, sumO, sumT);
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[2], codesO, codesT, 1, 2, 12, sumO, sumT);
-
-			source += _Size;
-
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[0], codesO, codesT, 2, 0, 16, sumO, sumT);
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[2], codesO, codesT, 2, 2, 20, sumO, sumT);
-
-			source += _Size;
-
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[0], codesO, codesT, 3, 0, 24, sumO, sumT);
-			FastPackOpaqueTransparentPixel_Pair(interpolation, source[2], codesO, codesT, 3, 2, 28, sumO, sumT);
-
-			if (Min(sumO, sumT) < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-			{
-				errorO = sumO;
-				answerO = codesO;
-				errorT = sumT;
-				answerT = codesT;
-				return;
-			}
-		}
-
 		const int* source = &_Image[(Y << 2) * _Size + (X << 2)];
 
 		uint32_t codesO = 0, codesT = 0;
 		int sumO = 0, sumT = 0;
 
-		PackOpaqueTransparentPixel(interpolation, source[0], codesO, codesT, 0, 0, 0, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[1], codesO, codesT, 0, 1, 2, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[2], codesO, codesT, 0, 2, 4, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[3], codesO, codesT, 0, 3, 6, sumO, sumT);
+#ifndef OPTION_AVX2
+		PackOpaqueTransparent_Pair(interpolation, source[0], codesO, codesT, 0, 0, 0, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[2], codesO, codesT, 0, 2, 4, sumO, sumT);
 
 		source += _Size;
 
-		PackOpaqueTransparentPixel(interpolation, source[0], codesO, codesT, 1, 0, 8, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[1], codesO, codesT, 1, 1, 10, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[2], codesO, codesT, 1, 2, 12, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[3], codesO, codesT, 1, 3, 14, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[0], codesO, codesT, 1, 0, 8, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[2], codesO, codesT, 1, 2, 12, sumO, sumT);
 
 		source += _Size;
 
-		PackOpaqueTransparentPixel(interpolation, source[0], codesO, codesT, 2, 0, 16, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[1], codesO, codesT, 2, 1, 18, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[2], codesO, codesT, 2, 2, 20, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[3], codesO, codesT, 2, 3, 22, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[0], codesO, codesT, 2, 0, 16, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[2], codesO, codesT, 2, 2, 20, sumO, sumT);
 
 		source += _Size;
 
-		PackOpaqueTransparentPixel(interpolation, source[0], codesO, codesT, 3, 0, 24, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[1], codesO, codesT, 3, 1, 26, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[2], codesO, codesT, 3, 2, 28, sumO, sumT);
-		PackOpaqueTransparentPixel(interpolation, source[3], codesO, codesT, 3, 3, 30, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[0], codesO, codesT, 3, 0, 24, sumO, sumT);
+		PackOpaqueTransparent_Pair(interpolation, source[2], codesO, codesT, 3, 2, 28, sumO, sumT);
+#else
+		PackOpaqueTransparent_Quad(interpolation, source[0], codesO, codesT, 0, 0, sumO, sumT);
+
+		source += _Size;
+
+		PackOpaqueTransparent_Quad(interpolation, source[0], codesO, codesT, 1, 8, sumO, sumT);
+
+		source += _Size;
+
+		PackOpaqueTransparent_Quad(interpolation, source[0], codesO, codesT, 2, 16, sumO, sumT);
+
+		source += _Size;
+
+		PackOpaqueTransparent_Quad(interpolation, source[0], codesO, codesT, 3, 24, sumO, sumT);
+#endif
 
 		errorO = sumO;
 		answerO = codesO;
@@ -1583,19 +1852,67 @@ struct Block
 		}
 	}
 
+	INLINED void Egoist4x4_Mask(__m128i& m0, __m128i& m1) const
+	{
+		const uint32_t* source = (const uint32_t*)&_Image[(Y << 2) * _Size + (X << 2)];
+
+		{
+			__m128i mc = _mm_loadu_si128((const __m128i*)source);
+			__m128i mmask = _mm_loadu_si128((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta));
+
+			m0 = _mm_blendv_epi8(m0, _mm_min_epu8(mc, m0), mmask);
+			m1 = _mm_max_epu8(m1, _mm_and_si128(mc, mmask));
+		}
+
+		source += _Size;
+
+		{
+			__m128i mc = _mm_loadu_si128((const __m128i*)source);
+			__m128i mmask = _mm_loadu_si128((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta));
+
+			m0 = _mm_blendv_epi8(m0, _mm_min_epu8(mc, m0), mmask);
+			m1 = _mm_max_epu8(m1, _mm_and_si128(mc, mmask));
+		}
+
+		source += _Size;
+
+		{
+			__m128i mc = _mm_loadu_si128((const __m128i*)source);
+			__m128i mmask = _mm_loadu_si128((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta));
+
+			m0 = _mm_blendv_epi8(m0, _mm_min_epu8(mc, m0), mmask);
+			m1 = _mm_max_epu8(m1, _mm_and_si128(mc, mmask));
+		}
+
+		source += _Size;
+
+		{
+			__m128i mc = _mm_loadu_si128((const __m128i*)source);
+			__m128i mmask = _mm_loadu_si128((const __m128i*)((const uint8_t*)source + _ImageToMaskDelta));
+
+			m0 = _mm_blendv_epi8(m0, _mm_min_epu8(mc, m0), mmask);
+			m1 = _mm_max_epu8(m1, _mm_and_si128(mc, mmask));
+		}
+	}
+
 	INLINED void Egoist()
 	{
 		__m128i m0 = _mm_shuffle_epi32(_mm_cvtsi32_si128(-1), 0);
 		__m128i m1 = _mm_setzero_si128();
 
-		for (int y = 0; y < 4; y++)
+		if (IsEmpty)
 		{
-			const int* source = &_Image[((Y << 2) + y) * _Size + (X << 2)];
-
-			__m128i mc = _mm_loadu_si128((const __m128i*)source);
-
-			m0 = _mm_min_epu8(m0, mc);
-			m1 = _mm_max_epu8(m1, mc);
+			for (int y = 0; y < 3; y++)
+			{
+				for (int x = 0; x < 3; x++)
+				{
+					Matrix[y][x]->Egoist4x4_Mask(m0, m1);
+				}
+			}
+		}
+		else
+		{
+			Egoist4x4_Mask(m0, m1);
 		}
 
 		m0 = _mm_min_epu8(m0, _mm_shuffle_epi32(m0, _MM_SHUFFLE(2, 3, 0, 1)));
@@ -1612,21 +1929,20 @@ struct Block
 		__m128i ma = _mm_srai_epi16(mC, 4);
 		mC = _mm_srai_epi16(mC, 3);
 
-		__m128i mBA = _mm_load_si128(&Colors);
-
-		mBA = _mm_blend_epi16(mBA, ma, 0x11);
-		mBA = _mm_blend_epi16(mBA, mC, 0xEE);
+		__m128i mBA = _mm_blend_epi16(mC, ma, 0x11);
 
 		_mm_store_si128(&Colors, mBA);
 
 		UpdateColors();
 	}
 
-	///////////////////
-	// Fast Estimate //
-	///////////////////
+	//////////////
+	// Estimate //
+	//////////////
 
-	INLINED static void FastEstimateOpaqueTransparent_Pair(__m128i mD, __m128i mV, int x, int& sumO, int& sumT, const int* source)
+#ifndef OPTION_AVX2
+
+	INLINED static void EstimateOpaqueTransparent_Pair(__m128i mD, __m128i mV, int x, int& sumO, int& sumT, const int* source)
 	{
 		__m128i mCx, mCy;
 		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
@@ -1651,7 +1967,7 @@ struct Block
 		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
 
 		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent2_I16));
+		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent_I16));
 
 		mA = _mm_sub_epi16(mA, mc);
 		mB = _mm_sub_epi16(mB, mc);
@@ -1660,7 +1976,7 @@ struct Block
 		mAT = _mm_sub_epi16(mAT, mc);
 		mBT = _mm_sub_epi16(mBT, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		mA = _mm_mullo_epi16(mA, mA);
 		mB = _mm_mullo_epi16(mB, mB);
@@ -1671,12 +1987,12 @@ struct Block
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-		mBT = _mm_min_epu16(mBT, mlimit);
+		mA = _mm_xor_si128(mA, msign);
+		mB = _mm_xor_si128(mB, msign);
+		mAC = _mm_xor_si128(mAC, msign);
+		mBC = _mm_xor_si128(mBC, msign);
+		mAT = _mm_xor_si128(mAT, msign);
+		mBT = _mm_xor_si128(mBT, msign);
 
 		mA = _mm_madd_epi16(mA, magrb);
 		mB = _mm_madd_epi16(mB, magrb);
@@ -1685,6 +2001,8 @@ struct Block
 		mAT = _mm_madd_epi16(mAT, magrb);
 		mBT = _mm_madd_epi16(mBT, magrb);
 
+		__m128i mbias = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source + _ImageToBiasDelta));
+
 		__m128i m2 = _mm_hadd_epi32(mA, mB);
 		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
 		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
@@ -1692,6 +2010,8 @@ struct Block
 		{
 			m2C = _mm_min_epi32(m2C, m2);
 			m2C = _mm_min_epi32(m2C, _mm_shuffle_epi32(m2C, _MM_SHUFFLE(1, 0, 3, 2)));
+
+			m2C = _mm_add_epi32(m2C, mbias);
 
 			sumO += _mm_cvtsi128_si32(m2C);
 			sumO += _mm_cvtsi128_si32(_mm_shuffle_epi32(m2C, _MM_SHUFFLE(2, 3, 0, 1)));
@@ -1700,13 +2020,275 @@ struct Block
 			m2T = _mm_min_epi32(m2T, m2);
 			m2T = _mm_min_epi32(m2T, _mm_shuffle_epi32(m2T, _MM_SHUFFLE(1, 0, 3, 2)));
 
+			m2T = _mm_add_epi32(m2T, mbias);
+
 			sumT += _mm_cvtsi128_si32(m2T);
 			sumT += _mm_cvtsi128_si32(_mm_shuffle_epi32(m2T, _MM_SHUFFLE(2, 3, 0, 1)));
 		}
 	}
 
+#else
 
-	INLINED static int FastEstimateTransparent_Pair(__m128i mD, __m128i mV, int x, const int* source)
+	INLINED static void EstimateOpaqueTransparent_Quad(__m128i mD0, __m128i mV0, const __m128i& mD1, const __m128i& mV1, int x, int& sumO, int& sumT, const int* source0, const int* source1)
+	{
+		__m256i mD = _mm256_inserti128_si256(_mm256_castsi128_si256(mD0), mD1, 1);
+		__m256i mV = _mm256_inserti128_si256(_mm256_castsi128_si256(mV0), mV1, 1);
+
+		__m256i mCzx, mCwy;
+		Macro_InterpolateCX_Pair(mD, mV, mCzx, mCwy, x);
+
+		__m128i mcx = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source0));
+		__m128i mcz = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source1));
+		__m256i vc = _mm256_inserti128_si256(_mm256_castsi128_si256(mcx), mcz, 1);
+
+		__m256i vA = _mm256_unpacklo_epi64(mCzx, mCwy);
+		__m256i vB = _mm256_unpackhi_epi64(mCzx, mCwy);
+
+		vA = Macro_ExpandC(vA);
+		vB = Macro_ExpandC(vB);
+
+		__m128i mmaskx = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source0 + _ImageToMaskDelta)));
+		__m128i mmaskz = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source1 + _ImageToMaskDelta)));
+		__m256i vmask = _mm256_inserti128_si256(_mm256_castsi128_si256(mmaskx), mmaskz, 1);
+
+		//
+
+		vc = _mm256_shufflelo_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+		vc = _mm256_shufflehi_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+
+		__m256i vBA = _mm256_sub_epi16(vB, vA);
+		__m256i vAC = _mm256_add_epi16(_mm256_srai_epi16(_mm256_add_epi16(_mm256_slli_epi16(vBA, 1), vBA), 3), vA);
+		__m256i vBC = _mm256_add_epi16(_mm256_srai_epi16(_mm256_add_epi16(_mm256_slli_epi16(vBA, 2), vBA), 3), vA);
+
+		__m256i vAT = _mm256_srai_epi16(_mm256_add_epi16(vA, vB), 1);
+		__m256i vBT = _mm256_and_si256(vAT, _mm256_load_si256((const __m256i*)g_Transparent_I16));
+
+		vA = _mm256_sub_epi16(vA, vc);
+		vB = _mm256_sub_epi16(vB, vc);
+		vAC = _mm256_sub_epi16(vAC, vc);
+		vBC = _mm256_sub_epi16(vBC, vc);
+		vAT = _mm256_sub_epi16(vAT, vc);
+		vBT = _mm256_sub_epi16(vBT, vc);
+
+		__m256i vsign = _mm256_broadcastd_epi32(_mm_cvtsi64_si128(0x80008000LL));
+
+		vA = _mm256_mullo_epi16(vA, vA);
+		vB = _mm256_mullo_epi16(vB, vB);
+		vAC = _mm256_mullo_epi16(vAC, vAC);
+		vBC = _mm256_mullo_epi16(vBC, vBC);
+		vAT = _mm256_mullo_epi16(vAT, vAT);
+		vBT = _mm256_mullo_epi16(vBT, vBT);
+
+		__m256i vagrb = _mm256_and_si256(vmask, _mm256_load_si256((const __m256i*)g_AGRB_I16));
+
+		vA = _mm256_xor_si256(vA, vsign);
+		vB = _mm256_xor_si256(vB, vsign);
+		vAC = _mm256_xor_si256(vAC, vsign);
+		vBC = _mm256_xor_si256(vBC, vsign);
+		vAT = _mm256_xor_si256(vAT, vsign);
+		vBT = _mm256_xor_si256(vBT, vsign);
+
+		vA = _mm256_madd_epi16(vA, vagrb);
+		vB = _mm256_madd_epi16(vB, vagrb);
+		vAC = _mm256_madd_epi16(vAC, vagrb);
+		vBC = _mm256_madd_epi16(vBC, vagrb);
+		vAT = _mm256_madd_epi16(vAT, vagrb);
+		vBT = _mm256_madd_epi16(vBT, vagrb);
+
+		__m128i mbiasx = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source0 + _ImageToBiasDelta));
+		__m128i mbiasz = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source1 + _ImageToBiasDelta));
+		__m128i mbias = _mm_unpacklo_epi64(mbiasx, mbiasz);
+
+		__m256i v2 = _mm256_hadd_epi32(vA, vB);
+		__m256i v2C = _mm256_hadd_epi32(vAC, vBC);
+		__m256i v2T = _mm256_hadd_epi32(vAT, vBT);
+
+		v2 = _mm256_permute4x64_epi64(v2, _MM_SHUFFLE(3, 1, 2, 0));
+		v2C = _mm256_permute4x64_epi64(v2C, _MM_SHUFFLE(3, 1, 2, 0));
+		v2T = _mm256_permute4x64_epi64(v2T, _MM_SHUFFLE(3, 1, 2, 0));
+
+		{
+			__m256i veO = _mm256_min_epi32(v2, v2C);
+			__m128i meO = _mm_min_epi32(_mm256_castsi256_si128(veO), _mm256_extracti128_si256(veO, 1));
+
+			meO = _mm_add_epi32(meO, mbias);
+
+			meO = _mm_add_epi32(meO, _mm_shuffle_epi32(meO, _MM_SHUFFLE(2, 3, 0, 1)));
+			meO = _mm_add_epi32(meO, _mm_shuffle_epi32(meO, _MM_SHUFFLE(0, 0, 2, 2)));
+
+			sumO += _mm_cvtsi128_si32(meO);
+		}
+		{
+			__m256i veT = _mm256_min_epi32(v2, v2T);
+			__m128i meT = _mm_min_epi32(_mm256_castsi256_si128(veT), _mm256_extracti128_si256(veT, 1));
+
+			meT = _mm_add_epi32(meT, mbias);
+
+			meT = _mm_add_epi32(meT, _mm_shuffle_epi32(meT, _MM_SHUFFLE(2, 3, 0, 1)));
+			meT = _mm_add_epi32(meT, _mm_shuffle_epi32(meT, _MM_SHUFFLE(0, 0, 2, 2)));
+
+			sumT += _mm_cvtsi128_si32(meT);
+		}
+	}
+
+	INLINED static int EstimateTransparent_Quad(__m128i mD0, __m128i mV0, const __m128i& mD1, const __m128i& mV1, int x, const int* source0, const int* source1)
+	{
+		__m256i mD = _mm256_inserti128_si256(_mm256_castsi128_si256(mD0), mD1, 1);
+		__m256i mV = _mm256_inserti128_si256(_mm256_castsi128_si256(mV0), mV1, 1);
+
+		__m256i mCzx, mCwy;
+		Macro_InterpolateCX_Pair(mD, mV, mCzx, mCwy, x);
+
+		__m128i mcx = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source0));
+		__m128i mcz = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source1));
+		__m256i vc = _mm256_inserti128_si256(_mm256_castsi128_si256(mcx), mcz, 1);
+
+		__m256i vA = _mm256_unpacklo_epi64(mCzx, mCwy);
+		__m256i vB = _mm256_unpackhi_epi64(mCzx, mCwy);
+
+		vA = Macro_ExpandC(vA);
+		vB = Macro_ExpandC(vB);
+
+		__m128i mmaskx = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source0 + _ImageToMaskDelta)));
+		__m128i mmaskz = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source1 + _ImageToMaskDelta)));
+		__m256i vmask = _mm256_inserti128_si256(_mm256_castsi128_si256(mmaskx), mmaskz, 1);
+
+		//
+
+		vc = _mm256_shufflelo_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+		vc = _mm256_shufflehi_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+
+		__m256i vAT = _mm256_srai_epi16(_mm256_add_epi16(vA, vB), 1);
+		__m256i vBT = _mm256_and_si256(vAT, _mm256_load_si256((const __m256i*)g_Transparent_I16));
+
+		vA = _mm256_sub_epi16(vA, vc);
+		vB = _mm256_sub_epi16(vB, vc);
+		vAT = _mm256_sub_epi16(vAT, vc);
+		vBT = _mm256_sub_epi16(vBT, vc);
+
+		__m256i vsign = _mm256_broadcastd_epi32(_mm_cvtsi64_si128(0x80008000LL));
+
+		vA = _mm256_mullo_epi16(vA, vA);
+		vB = _mm256_mullo_epi16(vB, vB);
+		vAT = _mm256_mullo_epi16(vAT, vAT);
+		vBT = _mm256_mullo_epi16(vBT, vBT);
+
+		__m256i vagrb = _mm256_and_si256(vmask, _mm256_load_si256((const __m256i*)g_AGRB_I16));
+
+		vA = _mm256_xor_si256(vA, vsign);
+		vB = _mm256_xor_si256(vB, vsign);
+		vAT = _mm256_xor_si256(vAT, vsign);
+		vBT = _mm256_xor_si256(vBT, vsign);
+
+		vA = _mm256_madd_epi16(vA, vagrb);
+		vB = _mm256_madd_epi16(vB, vagrb);
+		vAT = _mm256_madd_epi16(vAT, vagrb);
+		vBT = _mm256_madd_epi16(vBT, vagrb);
+
+		__m128i mbiasx = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source0 + _ImageToBiasDelta));
+		__m128i mbiasz = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source1 + _ImageToBiasDelta));
+		__m128i mbias = _mm_unpacklo_epi64(mbiasx, mbiasz);
+
+		__m256i v2 = _mm256_hadd_epi32(vA, vB);
+		__m256i v2T = _mm256_hadd_epi32(vAT, vBT);
+
+		v2 = _mm256_permute4x64_epi64(v2, _MM_SHUFFLE(3, 1, 2, 0));
+		v2T = _mm256_permute4x64_epi64(v2T, _MM_SHUFFLE(3, 1, 2, 0));
+
+		{
+			__m256i veT = _mm256_min_epi32(v2, v2T);
+			__m128i meT = _mm_min_epi32(_mm256_castsi256_si128(veT), _mm256_extracti128_si256(veT, 1));
+
+			meT = _mm_add_epi32(meT, mbias);
+
+			meT = _mm_add_epi32(meT, _mm_shuffle_epi32(meT, _MM_SHUFFLE(2, 3, 0, 1)));
+			meT = _mm_add_epi32(meT, _mm_shuffle_epi32(meT, _MM_SHUFFLE(0, 0, 2, 2)));
+
+			return _mm_cvtsi128_si32(meT);
+		}
+	}
+
+	INLINED static int EstimateOpaque_Quad(__m128i mD0, __m128i mV0, const __m128i& mD1, const __m128i& mV1, int x, const int* source0, const int* source1)
+	{
+		__m256i mD = _mm256_inserti128_si256(_mm256_castsi128_si256(mD0), mD1, 1);
+		__m256i mV = _mm256_inserti128_si256(_mm256_castsi128_si256(mV0), mV1, 1);
+
+		__m256i mCzx, mCwy;
+		Macro_InterpolateCX_Pair(mD, mV, mCzx, mCwy, x);
+
+		__m128i mcx = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source0));
+		__m128i mcz = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)source1));
+		__m256i vc = _mm256_inserti128_si256(_mm256_castsi128_si256(mcx), mcz, 1);
+
+		__m256i vA = _mm256_unpacklo_epi64(mCzx, mCwy);
+		__m256i vB = _mm256_unpackhi_epi64(mCzx, mCwy);
+
+		vA = Macro_ExpandC(vA);
+		vB = Macro_ExpandC(vB);
+
+		__m128i mmaskx = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source0 + _ImageToMaskDelta)));
+		__m128i mmaskz = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i*)((const uint8_t*)source1 + _ImageToMaskDelta)));
+		__m256i vmask = _mm256_inserti128_si256(_mm256_castsi128_si256(mmaskx), mmaskz, 1);
+
+		//
+
+		vc = _mm256_shufflelo_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+		vc = _mm256_shufflehi_epi16(vc, _MM_SHUFFLE(0, 2, 1, 3));
+
+		__m256i vBA = _mm256_sub_epi16(vB, vA);
+		__m256i vAC = _mm256_add_epi16(_mm256_srai_epi16(_mm256_add_epi16(_mm256_slli_epi16(vBA, 1), vBA), 3), vA);
+		__m256i vBC = _mm256_add_epi16(_mm256_srai_epi16(_mm256_add_epi16(_mm256_slli_epi16(vBA, 2), vBA), 3), vA);
+
+		vA = _mm256_sub_epi16(vA, vc);
+		vB = _mm256_sub_epi16(vB, vc);
+		vAC = _mm256_sub_epi16(vAC, vc);
+		vBC = _mm256_sub_epi16(vBC, vc);
+
+		__m256i vsign = _mm256_broadcastd_epi32(_mm_cvtsi64_si128(0x80008000LL));
+
+		vA = _mm256_mullo_epi16(vA, vA);
+		vB = _mm256_mullo_epi16(vB, vB);
+		vAC = _mm256_mullo_epi16(vAC, vAC);
+		vBC = _mm256_mullo_epi16(vBC, vBC);
+
+		__m256i vagrb = _mm256_and_si256(vmask, _mm256_load_si256((const __m256i*)g_AGRB_I16));
+
+		vA = _mm256_xor_si256(vA, vsign);
+		vB = _mm256_xor_si256(vB, vsign);
+		vAC = _mm256_xor_si256(vAC, vsign);
+		vBC = _mm256_xor_si256(vBC, vsign);
+
+		vA = _mm256_madd_epi16(vA, vagrb);
+		vB = _mm256_madd_epi16(vB, vagrb);
+		vAC = _mm256_madd_epi16(vAC, vagrb);
+		vBC = _mm256_madd_epi16(vBC, vagrb);
+
+		__m128i mbiasx = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source0 + _ImageToBiasDelta));
+		__m128i mbiasz = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source1 + _ImageToBiasDelta));
+		__m128i mbias = _mm_unpacklo_epi64(mbiasx, mbiasz);
+
+		__m256i v2 = _mm256_hadd_epi32(vA, vB);
+		__m256i v2C = _mm256_hadd_epi32(vAC, vBC);
+
+		v2 = _mm256_permute4x64_epi64(v2, _MM_SHUFFLE(3, 1, 2, 0));
+		v2C = _mm256_permute4x64_epi64(v2C, _MM_SHUFFLE(3, 1, 2, 0));
+
+		{
+			__m256i veO = _mm256_min_epi32(v2, v2C);
+			__m128i meO = _mm_min_epi32(_mm256_castsi256_si128(veO), _mm256_extracti128_si256(veO, 1));
+
+			meO = _mm_add_epi32(meO, mbias);
+
+			meO = _mm_add_epi32(meO, _mm_shuffle_epi32(meO, _MM_SHUFFLE(2, 3, 0, 1)));
+			meO = _mm_add_epi32(meO, _mm_shuffle_epi32(meO, _MM_SHUFFLE(0, 0, 2, 2)));
+
+			return _mm_cvtsi128_si32(meO);
+		}
+	}
+
+#endif
+
+	INLINED static int EstimateTransparent_Pair(__m128i mD, __m128i mV, int x, const int* source)
 	{
 		__m128i mCx, mCy;
 		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
@@ -1727,14 +2309,14 @@ struct Block
 		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
 
 		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent2_I16));
+		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent_I16));
 
 		mA = _mm_sub_epi16(mA, mc);
 		mB = _mm_sub_epi16(mB, mc);
 		mAT = _mm_sub_epi16(mAT, mc);
 		mBT = _mm_sub_epi16(mBT, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		mA = _mm_mullo_epi16(mA, mA);
 		mB = _mm_mullo_epi16(mB, mB);
@@ -1743,15 +2325,17 @@ struct Block
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-		mBT = _mm_min_epu16(mBT, mlimit);
+		mA = _mm_xor_si128(mA, msign);
+		mB = _mm_xor_si128(mB, msign);
+		mAT = _mm_xor_si128(mAT, msign);
+		mBT = _mm_xor_si128(mBT, msign);
 
 		mA = _mm_madd_epi16(mA, magrb);
 		mB = _mm_madd_epi16(mB, magrb);
 		mAT = _mm_madd_epi16(mAT, magrb);
 		mBT = _mm_madd_epi16(mBT, magrb);
+
+		__m128i mbias = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source + _ImageToBiasDelta));
 
 		__m128i m2 = _mm_hadd_epi32(mA, mB);
 		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
@@ -1760,11 +2344,13 @@ struct Block
 			m2T = _mm_min_epi32(m2T, m2);
 			m2T = _mm_min_epi32(m2T, _mm_shuffle_epi32(m2T, _MM_SHUFFLE(1, 0, 3, 2)));
 
+			m2T = _mm_add_epi32(m2T, mbias);
+
 			return _mm_cvtsi128_si32(m2T) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2T, _MM_SHUFFLE(2, 3, 0, 1)));
 		}
 	}
 
-	INLINED static int FastEstimateOpaque_Pair(__m128i mD, __m128i mV, int x, const int* source)
+	INLINED static int EstimateOpaque_Pair(__m128i mD, __m128i mV, int x, const int* source)
 	{
 		__m128i mCx, mCy;
 		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
@@ -1793,7 +2379,7 @@ struct Block
 		mAC = _mm_sub_epi16(mAC, mc);
 		mBC = _mm_sub_epi16(mBC, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		mA = _mm_mullo_epi16(mA, mA);
 		mB = _mm_mullo_epi16(mB, mB);
@@ -1802,15 +2388,17 @@ struct Block
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
+		mA = _mm_xor_si128(mA, msign);
+		mB = _mm_xor_si128(mB, msign);
+		mAC = _mm_xor_si128(mAC, msign);
+		mBC = _mm_xor_si128(mBC, msign);
 
 		mA = _mm_madd_epi16(mA, magrb);
 		mB = _mm_madd_epi16(mB, magrb);
 		mAC = _mm_madd_epi16(mAC, magrb);
 		mBC = _mm_madd_epi16(mBC, magrb);
+
+		__m128i mbias = _mm_loadl_epi64((const __m128i*)((const uint8_t*)source + _ImageToBiasDelta));
 
 		__m128i m2 = _mm_hadd_epi32(mA, mB);
 		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
@@ -1819,11 +2407,13 @@ struct Block
 			m2C = _mm_min_epi32(m2C, m2);
 			m2C = _mm_min_epi32(m2C, _mm_shuffle_epi32(m2C, _MM_SHUFFLE(1, 0, 3, 2)));
 
+			m2C = _mm_add_epi32(m2C, mbias);
+
 			return _mm_cvtsi128_si32(m2C) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2C, _MM_SHUFFLE(2, 3, 0, 1)));
 		}
 	}
 
-	INLINED static int FastEstimateTransparent_Duo(__m128i mD, __m128i mV, int x, const int* source0, const int* source1)
+	INLINED static int EstimateTransparent_Duo(__m128i mD, __m128i mV, int x, const int* source0, const int* source1)
 	{
 		__m128i mCx, mCy;
 		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
@@ -1848,14 +2438,14 @@ struct Block
 		mc = _mm_shufflehi_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
 
 		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent2_I16));
+		__m128i mBT = _mm_and_si128(mAT, _mm_load_si128((const __m128i*)g_Transparent_I16));
 
 		mA = _mm_sub_epi16(mA, mc);
 		mB = _mm_sub_epi16(mB, mc);
 		mAT = _mm_sub_epi16(mAT, mc);
 		mBT = _mm_sub_epi16(mBT, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		mA = _mm_mullo_epi16(mA, mA);
 		mB = _mm_mullo_epi16(mB, mB);
@@ -1864,15 +2454,19 @@ struct Block
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAT = _mm_min_epu16(mAT, mlimit);
-		mBT = _mm_min_epu16(mBT, mlimit);
+		mA = _mm_xor_si128(mA, msign);
+		mB = _mm_xor_si128(mB, msign);
+		mAT = _mm_xor_si128(mAT, msign);
+		mBT = _mm_xor_si128(mBT, msign);
 
 		mA = _mm_madd_epi16(mA, magrb);
 		mB = _mm_madd_epi16(mB, magrb);
 		mAT = _mm_madd_epi16(mAT, magrb);
 		mBT = _mm_madd_epi16(mBT, magrb);
+
+		__m128i mbiasx = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source0 + _ImageToBiasDelta));
+		__m128i mbiasy = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source1 + _ImageToBiasDelta));
+		__m128i mbias = _mm_unpacklo_epi32(mbiasx, mbiasy);
 
 		__m128i m2 = _mm_hadd_epi32(mA, mB);
 		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
@@ -1881,11 +2475,13 @@ struct Block
 			m2T = _mm_min_epi32(m2T, m2);
 			m2T = _mm_min_epi32(m2T, _mm_shuffle_epi32(m2T, _MM_SHUFFLE(1, 0, 3, 2)));
 
+			m2T = _mm_add_epi32(m2T, mbias);
+
 			return _mm_cvtsi128_si32(m2T) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2T, _MM_SHUFFLE(2, 3, 0, 1)));
 		}
 	}
 
-	INLINED static int FastEstimateOpaque_Duo(__m128i mD, __m128i mV, int x, const int* source0, const int* source1)
+	INLINED static int EstimateOpaque_Duo(__m128i mD, __m128i mV, int x, const int* source0, const int* source1)
 	{
 		__m128i mCx, mCy;
 		Macro_InterpolateCX_Pair(mD, mV, mCx, mCy, x);
@@ -1918,7 +2514,7 @@ struct Block
 		mAC = _mm_sub_epi16(mAC, mc);
 		mBC = _mm_sub_epi16(mBC, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		mA = _mm_mullo_epi16(mA, mA);
 		mB = _mm_mullo_epi16(mB, mB);
@@ -1927,15 +2523,19 @@ struct Block
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		mA = _mm_min_epu16(mA, mlimit);
-		mB = _mm_min_epu16(mB, mlimit);
-		mAC = _mm_min_epu16(mAC, mlimit);
-		mBC = _mm_min_epu16(mBC, mlimit);
+		mA = _mm_xor_si128(mA, msign);
+		mB = _mm_xor_si128(mB, msign);
+		mAC = _mm_xor_si128(mAC, msign);
+		mBC = _mm_xor_si128(mBC, msign);
 
 		mA = _mm_madd_epi16(mA, magrb);
 		mB = _mm_madd_epi16(mB, magrb);
 		mAC = _mm_madd_epi16(mAC, magrb);
 		mBC = _mm_madd_epi16(mBC, magrb);
+
+		__m128i mbiasx = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source0 + _ImageToBiasDelta));
+		__m128i mbiasy = _mm_cvtsi32_si128(*(const int*)((const uint8_t*)source1 + _ImageToBiasDelta));
+		__m128i mbias = _mm_unpacklo_epi32(mbiasx, mbiasy);
 
 		__m128i m2 = _mm_hadd_epi32(mA, mB);
 		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
@@ -1944,11 +2544,13 @@ struct Block
 			m2C = _mm_min_epi32(m2C, m2);
 			m2C = _mm_min_epi32(m2C, _mm_shuffle_epi32(m2C, _MM_SHUFFLE(1, 0, 3, 2)));
 
+			m2C = _mm_add_epi32(m2C, mbias);
+
 			return _mm_cvtsi128_si32(m2C) + _mm_cvtsi128_si32(_mm_shuffle_epi32(m2C, _MM_SHUFFLE(2, 3, 0, 1)));
 		}
 	}
 
-	INLINED static int FastEstimateTransparent(__m128i mD, __m128i mV, int x, const int* source)
+	INLINED static int EstimateTransparent(__m128i mD, __m128i mV, int x, const int* source)
 	{
 		__m128i mC = Macro_ExpandC(Macro_InterpolateCX(mD, mV, x));
 
@@ -1971,26 +2573,28 @@ struct Block
 		m2 = _mm_sub_epi16(m2, mc);
 		m2T = _mm_sub_epi16(m2T, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		m2 = _mm_mullo_epi16(m2, m2);
 		m2T = _mm_mullo_epi16(m2T, m2T);
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		m2 = _mm_min_epu16(m2, mlimit);
-		m2T = _mm_min_epu16(m2T, mlimit);
+		m2 = _mm_xor_si128(m2, msign);
+		m2T = _mm_xor_si128(m2T, msign);
 
 		m2 = _mm_madd_epi16(m2, magrb);
 		m2T = _mm_madd_epi16(m2T, magrb);
 
+		int bias = *(const int32_t*)((const uint8_t*)source + _ImageToBiasDelta);
+
 		__m128i me4 = _mm_hadd_epi32(m2, m2T);
 		__m128i me1 = HorizontalMinimum4(me4);
 
-		return _mm_cvtsi128_si32(me1);
+		return _mm_cvtsi128_si32(me1) + bias;
 	}
 
-	INLINED static int FastEstimateOpaque(__m128i mD, __m128i mV, int x, const int* source)
+	INLINED static int EstimateOpaque(__m128i mD, __m128i mV, int x, const int* source)
 	{
 		__m128i mC = Macro_ExpandC(Macro_InterpolateCX(mD, mV, x));
 
@@ -2014,26 +2618,28 @@ struct Block
 		m2 = _mm_sub_epi16(m2, mc);
 		m2C = _mm_sub_epi16(m2C, mc);
 
-		__m128i mlimit = _mm_shuffle_epi32(_mm_cvtsi32_si128(0x7FFF7FFF), 0);
+		__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
 
 		m2 = _mm_mullo_epi16(m2, m2);
 		m2C = _mm_mullo_epi16(m2C, m2C);
 
 		__m128i magrb = _mm_and_si128(mmask, _mm_load_si128((const __m128i*)g_AGRB_I16));
 
-		m2 = _mm_min_epu16(m2, mlimit);
-		m2C = _mm_min_epu16(m2C, mlimit);
+		m2 = _mm_xor_si128(m2, msign);
+		m2C = _mm_xor_si128(m2C, msign);
 
 		m2 = _mm_madd_epi16(m2, magrb);
 		m2C = _mm_madd_epi16(m2C, magrb);
 
+		int bias = *(const int32_t*)((const uint8_t*)source + _ImageToBiasDelta);
+
 		__m128i me4 = _mm_hadd_epi32(m2, m2C);
 		__m128i me1 = HorizontalMinimum4(me4);
 
-		return _mm_cvtsi128_si32(me1);
+		return _mm_cvtsi128_si32(me1) + bias;
 	}
 
-	INLINED void FastEstimateOpaqueTransparent2x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x, int& sumO, int& sumT) const
+	INLINED void EstimateOpaqueTransparent2x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x, int& sumO, int& sumT) const
 	{
 		__m128i mDL, mDR, mVL, mVR;
 		Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
@@ -2043,11 +2649,15 @@ struct Block
 
 		const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-		FastEstimateOpaqueTransparent_Pair(mD0, mV0, x, sumO, sumT, source);
-		FastEstimateOpaqueTransparent_Pair(mD1, mV1, x, sumO, sumT, source + _Size);
+#ifndef OPTION_AVX2
+		EstimateOpaqueTransparent_Pair(mD0, mV0, x, sumO, sumT, source);
+		EstimateOpaqueTransparent_Pair(mD1, mV1, x, sumO, sumT, source + _Size);
+#else
+		EstimateOpaqueTransparent_Quad(mD0, mV0, mD1, mV1, x, sumO, sumT, source, source + _Size);
+#endif
 	}
 
-	INLINED int FastEstimate2x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
+	INLINED int Estimate2x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
 	{
 		if (Data[1] & 1u)
 		{
@@ -2062,8 +2672,12 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			int sum = FastEstimateTransparent_Pair(mD0, mV0, x, source);
-			sum += FastEstimateTransparent_Pair(mD1, mV1, x, source + _Size);
+#ifndef OPTION_AVX2
+			int sum = EstimateTransparent_Pair(mD0, mV0, x, source);
+			sum += EstimateTransparent_Pair(mD1, mV1, x, source + _Size);
+#else
+			int sum = EstimateTransparent_Quad(mD0, mV0, mD1, mV1, x, source, source + _Size);
+#endif
 
 			return sum;
 		}
@@ -2077,14 +2691,18 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			int sum = FastEstimateOpaque_Pair(mD0, mV0, x, source);
-			sum += FastEstimateOpaque_Pair(mD1, mV1, x, source + _Size);
+#ifndef OPTION_AVX2
+			int sum = EstimateOpaque_Pair(mD0, mV0, x, source);
+			sum += EstimateOpaque_Pair(mD1, mV1, x, source + _Size);
+#else
+			int sum = EstimateOpaque_Quad(mD0, mV0, mD1, mV1, x, source, source + _Size);
+#endif
 
 			return sum;
 		}
 	}
 
-	INLINED int FastEstimate2x1(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
+	INLINED int Estimate2x1(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
 	{
 		if (Data[1] & 1u)
 		{
@@ -2099,7 +2717,7 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			int sum = FastEstimateTransparent_Pair(mD, mV, x, source);
+			int sum = EstimateTransparent_Pair(mD, mV, x, source);
 
 			return sum;
 		}
@@ -2113,339 +2731,13 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			int sum = FastEstimateOpaque_Pair(mD, mV, x, source);
+			int sum = EstimateOpaque_Pair(mD, mV, x, source);
 
 			return sum;
 		}
 	}
 
-	INLINED int FastEstimate1x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (Data[1] & 1u)
-		{
-			if (IsEmpty)
-				return 0;
-
-			__m128i mDT, mDB, mVT, mVB;
-			Macro_Gradient(mDT, mDB, mVT, mVB, b00, b10, b01, b11, x, y);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDT, mDB, mVT, mVB, mD, mV, x);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateTransparent_Duo(mD, mV, y, source, source + _Size);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDT, mDB, mVT, mVB;
-			Macro_Gradient(mDT, mDB, mVT, mVB, b00, b10, b01, b11, x, y);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDT, mDB, mVT, mVB, mD, mV, x);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = FastEstimateOpaque_Duo(mD, mV, y, source, source + _Size);
-
-			return sum;
-		}
-	}
-
-	INLINED int FastEstimate1x1(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (Data[1] & 1u)
-		{
-			if (IsEmpty)
-				return 0;
-
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			return FastEstimateTransparent(mD, mV, x, source);
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			return FastEstimateOpaque(mD, mV, x, source);
-		}
-	}
-
-	//////////////////////
-	// Precise Estimate //
-	//////////////////////
-
-	INLINED static void PreciseEstimateOpaqueTransparent(__m128i mD, __m128i mV, int x, int& sumO, int& sumT, const int* source)
-	{
-		__m128i mC = Macro_ExpandC(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*source));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
-
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_insert_epi16(mAT, 0, 0);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-		mBT = _mm_sub_epi16(mBT, mc);
-
-		__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-		mBT = _mm_mullo_epi16(mBT, mBT);
-
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta))));
-
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAC = _mm_mullo_epi32(mAC, magrb);
-		mBC = _mm_mullo_epi32(mBC, magrb);
-		mAT = _mm_mullo_epi32(mAT, magrb);
-		mBT = _mm_mullo_epi32(mBT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
-
-		{
-			__m128i me4 = _mm_hadd_epi32(m2, m2C);
-			__m128i me1 = HorizontalMinimum4(me4);
-
-			sumO += _mm_cvtsi128_si32(me1);
-		}
-		{
-			__m128i me4 = _mm_hadd_epi32(m2, m2T);
-			__m128i me1 = HorizontalMinimum4(me4);
-
-			sumT += _mm_cvtsi128_si32(me1);
-		}
-	}
-
-
-	INLINED static int PreciseEstimateTransparent(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mC = Macro_ExpandC(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*source));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
-
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
-
-		__m128i mAT = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-		__m128i mBT = _mm_insert_epi16(mAT, 0, 0);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAT = _mm_sub_epi16(mAT, mc);
-		mBT = _mm_sub_epi16(mBT, mc);
-
-		__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAT = _mm_mullo_epi16(mAT, mAT);
-		mBT = _mm_mullo_epi16(mBT, mBT);
-
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta))));
-
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAT = _mm_mullo_epi32(mAT, magrb);
-		mBT = _mm_mullo_epi32(mBT, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2T = _mm_hadd_epi32(mAT, mBT);
-
-		__m128i me4 = _mm_hadd_epi32(m2, m2T);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		return _mm_cvtsi128_si32(me1);
-	}
-
-	INLINED static int PreciseEstimateOpaque(__m128i mD, __m128i mV, int x, const int* source)
-	{
-		__m128i mC = Macro_ExpandC(Macro_InterpolateCX(mD, mV, x));
-
-		__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(*source));
-		mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
-
-		__m128i mA = mC;
-		__m128i mB = _mm_unpackhi_epi64(mA, mA);
-
-		mA = _mm_cvtepi16_epi32(mA);
-		mB = _mm_cvtepi16_epi32(mB);
-
-		__m128i mBA = _mm_sub_epi16(mB, mA);
-		__m128i mAC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 1), mBA), 3), mA);
-		__m128i mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
-
-		mA = _mm_sub_epi16(mA, mc);
-		mB = _mm_sub_epi16(mB, mc);
-		mAC = _mm_sub_epi16(mAC, mc);
-		mBC = _mm_sub_epi16(mBC, mc);
-
-		__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB);
-
-		mA = _mm_mullo_epi16(mA, mA);
-		mB = _mm_mullo_epi16(mB, mB);
-		mAC = _mm_mullo_epi16(mAC, mAC);
-		mBC = _mm_mullo_epi16(mBC, mBC);
-
-		magrb = _mm_and_si128(magrb, _mm_cvtepi8_epi32(_mm_cvtsi32_si128(*(const int*)((const uint8_t*)source + _ImageToMaskDelta))));
-
-		mA = _mm_mullo_epi32(mA, magrb);
-		mB = _mm_mullo_epi32(mB, magrb);
-		mAC = _mm_mullo_epi32(mAC, magrb);
-		mBC = _mm_mullo_epi32(mBC, magrb);
-
-		__m128i m2 = _mm_hadd_epi32(mA, mB);
-		__m128i m2C = _mm_hadd_epi32(mAC, mBC);
-
-		__m128i me4 = _mm_hadd_epi32(m2, m2C);
-		__m128i me1 = HorizontalMinimum4(me4);
-
-		return _mm_cvtsi128_si32(me1);
-	}
-
-	INLINED void PreciseEstimateOpaqueTransparent2x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x, int& sumO, int& sumT) const
-	{
-		__m128i mDL, mDR, mVL, mVR;
-		Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-		__m128i mD0, mV0, mD1, mV1;
-		Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-		const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-		PreciseEstimateOpaqueTransparent(mD0, mV0, x + 0, sumO, sumT, source + 0);
-		PreciseEstimateOpaqueTransparent(mD0, mV0, x + 1, sumO, sumT, source + 1);
-
-		source += _Size;
-
-		PreciseEstimateOpaqueTransparent(mD1, mV1, x + 0, sumO, sumT, source + 0);
-		PreciseEstimateOpaqueTransparent(mD1, mV1, x + 1, sumO, sumT, source + 1);
-	}
-
-	INLINED int PreciseEstimate2x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (Data[1] & 1u)
-		{
-			if (IsEmpty)
-				return 0;
-
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD0, mV0, mD1, mV1;
-			Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateTransparent(mD0, mV0, x + 0, source + 0);
-			sum += PreciseEstimateTransparent(mD0, mV0, x + 1, source + 1);
-
-			source += _Size;
-
-			sum += PreciseEstimateTransparent(mD1, mV1, x + 0, source + 0);
-			sum += PreciseEstimateTransparent(mD1, mV1, x + 1, source + 1);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD0, mV0, mD1, mV1;
-			Macro_InterpolateCY_Pair(mDL, mDR, mVL, mVR, mD0, mV0, mD1, mV1, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateOpaque(mD0, mV0, x + 0, source + 0);
-			sum += PreciseEstimateOpaque(mD0, mV0, x + 1, source + 1);
-
-			source += _Size;
-
-			sum += PreciseEstimateOpaque(mD1, mV1, x + 0, source + 0);
-			sum += PreciseEstimateOpaque(mD1, mV1, x + 1, source + 1);
-
-			return sum;
-		}
-	}
-
-	INLINED int PreciseEstimate2x1(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
-	{
-		if (Data[1] & 1u)
-		{
-			if (IsEmpty)
-				return 0;
-
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateTransparent(mD, mV, x + 0, source + 0);
-			sum += PreciseEstimateTransparent(mD, mV, x + 1, source + 1);
-
-			return sum;
-		}
-		else
-		{
-			__m128i mDL, mDR, mVL, mVR;
-			Macro_Gradient(mDL, mDR, mVL, mVR, b00, b01, b10, b11, y, x);
-
-			__m128i mD, mV;
-			Macro_InterpolateCY(mDL, mDR, mVL, mVR, mD, mV, y);
-
-			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
-
-			int sum = PreciseEstimateOpaque(mD, mV, x + 0, source + 0);
-			sum += PreciseEstimateOpaque(mD, mV, x + 1, source + 1);
-
-			return sum;
-		}
-	}
-
-	INLINED int PreciseEstimate1x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
+	INLINED int Estimate1x2(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
 	{
 		if (Data[1] & 1u)
 		{
@@ -2460,8 +2752,7 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			int sum = PreciseEstimateTransparent(mD, mV, y + 0, source);
-			sum += PreciseEstimateTransparent(mD, mV, y + 1, source + _Size);
+			int sum = EstimateTransparent_Duo(mD, mV, y, source, source + _Size);
 
 			return sum;
 		}
@@ -2475,14 +2766,13 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			int sum = PreciseEstimateOpaque(mD, mV, y + 0, source);
-			sum += PreciseEstimateOpaque(mD, mV, y + 1, source + _Size);
+			int sum = EstimateOpaque_Duo(mD, mV, y, source, source + _Size);
 
 			return sum;
 		}
 	}
 
-	INLINED int PreciseEstimate1x1(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
+	INLINED int Estimate1x1(const Block& b00, const Block& b01, const Block& b10, const Block& b11, int y, int x) const
 	{
 		if (Data[1] & 1u)
 		{
@@ -2497,7 +2787,7 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			return PreciseEstimateTransparent(mD, mV, x, source);
+			return EstimateTransparent(mD, mV, x, source);
 		}
 		else
 		{
@@ -2509,175 +2799,90 @@ struct Block
 
 			const int* source = &_Image[((Y << 2) + y) * _Size + ((X << 2) + x)];
 
-			return PreciseEstimateOpaque(mD, mV, x, source);
+			return EstimateOpaque(mD, mV, x, source);
 		}
 	}
 
 	int64_t Estimate7x7(int64_t water) const
 	{
-		int64_t sum4, sum9;
-
 		int64_t sum = 0;
 
 		if (!IsEmpty)
 		{
 			int sumO = 0, sumT = 0;
 
-			FastEstimateOpaqueTransparent2x2(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 0, sumO, sumT);
+			EstimateOpaqueTransparent2x2(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 0, sumO, sumT);
 			sum = (sumO <= sumT) ? sumO : sumT;
 			if (sum >= water)
 				return sum;
 
-			FastEstimateOpaqueTransparent2x2(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 2, sumO, sumT);
+			EstimateOpaqueTransparent2x2(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 2, sumO, sumT);
 			sum = (sumO <= sumT) ? sumO : sumT;
 			if (sum >= water)
 				return sum;
 
-			FastEstimateOpaqueTransparent2x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 0, sumO, sumT);
+			EstimateOpaqueTransparent2x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 0, sumO, sumT);
 			sum = (sumO <= sumT) ? sumO : sumT;
 			if (sum >= water)
 				return sum;
 
-			FastEstimateOpaqueTransparent2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 2, sumO, sumT);
+			EstimateOpaqueTransparent2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 2, sumO, sumT);
 			sum = (sumO <= sumT) ? sumO : sumT;
 			if (sum >= water)
 				return sum;
 		}
 
-		sum4 = sum;
-
-		sum += Matrix[1][2]->FastEstimate2x2(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 0);
+		sum += Matrix[1][2]->Estimate2x2(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 0);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[1][2]->FastEstimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 0);
+		sum += Matrix[1][2]->Estimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 0);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[2][1]->FastEstimate2x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 0);
+		sum += Matrix[2][1]->Estimate2x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 0);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[2][1]->FastEstimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 2);
+		sum += Matrix[2][1]->Estimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 2);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[2][2]->FastEstimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 0);
-		if (sum >= water)
-			return sum;
-
-		sum9 = sum;
-
-		//
-
-		sum += Matrix[0][1]->FastEstimate2x1(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][1]->FastEstimate2x1(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 2);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][2]->FastEstimate2x1(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 0);
+		sum += Matrix[2][2]->Estimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 0);
 		if (sum >= water)
 			return sum;
 
 		//
 
-		sum += Matrix[1][0]->FastEstimate1x2(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 3);
+		sum += Matrix[0][1]->Estimate2x1(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 0);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[1][0]->FastEstimate1x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 3);
+		sum += Matrix[0][1]->Estimate2x1(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 2);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[2][0]->FastEstimate1x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 3);
-		if (sum >= water)
-			return sum;
-
-		//
-
-		sum += Matrix[0][0]->FastEstimate1x1(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 3);
-		if (sum >= water)
-			return sum;
-
-		if (sum < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-		{
-			return sum;
-		}
-
-		sum = 0;
-
-		if (sum9 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-		{
-			sum = sum9;
-		}
-		else
-		{
-			if (sum4 < 0x7FFF * Min(Min(kGreen, kRed), kBlue))
-			{
-				sum = sum4;
-			}
-			else
-			{
-				if (!IsEmpty)
-				{
-					int sumO = 0, sumT = 0;
-
-					PreciseEstimateOpaqueTransparent2x2(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 0, sumO, sumT);
-					PreciseEstimateOpaqueTransparent2x2(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 2, sumO, sumT);
-					PreciseEstimateOpaqueTransparent2x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 0, sumO, sumT);
-					PreciseEstimateOpaqueTransparent2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 2, sumO, sumT);
-
-					sum = (sumO <= sumT) ? sumO : sumT;
-					if (sum >= water)
-						return sum;
-				}
-			}
-
-			sum += Matrix[1][2]->PreciseEstimate2x2(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 0, 0);
-			sum += Matrix[1][2]->PreciseEstimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 2, 0);
-			sum += Matrix[2][1]->PreciseEstimate2x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 0);
-			sum += Matrix[2][1]->PreciseEstimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 2);
-			sum += Matrix[2][2]->PreciseEstimate2x2(*this, *Matrix[1][2], *Matrix[2][1], *Matrix[2][2], 0, 0);
-			if (sum >= water)
-				return sum;
-		}
-
-		//
-
-		sum += Matrix[0][1]->PreciseEstimate2x1(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 0);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][1]->PreciseEstimate2x1(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 2);
-		if (sum >= water)
-			return sum;
-
-		sum += Matrix[0][2]->PreciseEstimate2x1(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 0);
+		sum += Matrix[0][2]->Estimate2x1(*Matrix[0][1], *Matrix[0][2], *this, *Matrix[1][2], 3, 0);
 		if (sum >= water)
 			return sum;
 
 		//
 
-		sum += Matrix[1][0]->PreciseEstimate1x2(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 3);
+		sum += Matrix[1][0]->Estimate1x2(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 0, 3);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[1][0]->PreciseEstimate1x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 3);
+		sum += Matrix[1][0]->Estimate1x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 2, 3);
 		if (sum >= water)
 			return sum;
 
-		sum += Matrix[2][0]->PreciseEstimate1x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 3);
+		sum += Matrix[2][0]->Estimate1x2(*Matrix[1][0], *this, *Matrix[2][0], *Matrix[2][1], 0, 3);
 		if (sum >= water)
 			return sum;
 
 		//
 
-		sum += Matrix[0][0]->PreciseEstimate1x1(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 3);
-		if (sum >= water)
-			return sum;
+		sum += Matrix[0][0]->Estimate1x1(*Matrix[0][0], *Matrix[0][1], *Matrix[1][0], *this, 3, 3);
 
 		return sum;
 	}
@@ -2761,9 +2966,9 @@ struct Block
 		}
 	}
 
-	INLINED void ChangeColors(__m128i& backup, int64_t& water, int& changes, int mark, int mode, bool hasG, bool hasR, bool hasB, int group, int mask)
+	INLINED void ChangeColors(__m128i& backup, int64_t& water, int& changes, int mark, int mode, bool hasG, bool hasR, bool hasB, int group, int mask, int symmetric)
 	{
-		if ((changes != 0) || (mask < mark))
+		if ((changes != 0) || ((mask << symmetric) < mark))
 		{
 			for (;; )
 			{
@@ -2911,10 +3116,36 @@ struct Block
 
 			int modeA = (M128I_I16(Colors, 0) == 0xF);
 
-			ChangeColors(solution, water, changes, mark, modeA, true, true, true, 0, 4);
-			ChangeColors(solution, water, changes, mark, modeA, true, false, false, 0, 0x10);
-			ChangeColors(solution, water, changes, mark, modeA, false, true, false, 0, 0x40);
-			ChangeColors(solution, water, changes, mark, modeA, false, false, true, 0, 0x100);
+			{
+				bool symmetric = true;
+
+				{
+					int c = M128I_I16(Colors, 0 + 1);
+
+					symmetric &= (c > 0);
+					symmetric &= (c < 0x1F);
+				}
+
+				{
+					int c = M128I_I16(Colors, 0 + 2);
+
+					symmetric &= (c > 0);
+					symmetric &= (c < 0x1F);
+				}
+
+				{
+					int c = M128I_I16(Colors, 0 + 3);
+
+					symmetric &= (c > 0);
+					symmetric &= (c < 0x1F);
+				}
+
+				ChangeColors(solution, water, changes, mark, modeA, true, true, true, 0, 4, symmetric);
+			}
+
+			ChangeColors(solution, water, changes, mark, modeA, true, false, false, 0, 0x10, 1);
+			ChangeColors(solution, water, changes, mark, modeA, false, true, false, 0, 0x40, 1);
+			ChangeColors(solution, water, changes, mark, modeA, false, false, true, 0, 0x100, 1);
 
 			//
 
@@ -2925,10 +3156,36 @@ struct Block
 
 			int modeB = (M128I_I16(Colors, 4) == 0xF);
 
-			ChangeColors(solution, water, changes, mark, modeB, true, true, true, 4, 0x1000);
-			ChangeColors(solution, water, changes, mark, modeB, true, false, false, 4, 0x4000);
-			ChangeColors(solution, water, changes, mark, modeB, false, true, false, 4, 0x10000);
-			ChangeColors(solution, water, changes, mark, modeB, false, false, true, 4, 0x40000);
+			{
+				bool symmetric = true;
+
+				{
+					int c = M128I_I16(Colors, 4 + 1);
+
+					symmetric &= (c > 0);
+					symmetric &= (c < 0x1F);
+				}
+
+				{
+					int c = M128I_I16(Colors, 4 + 2);
+
+					symmetric &= (c > 0);
+					symmetric &= (c < 0x1F);
+				}
+
+				{
+					int c = M128I_I16(Colors, 4 + 3);
+
+					symmetric &= (c > 0);
+					symmetric &= (c < 0x1F);
+				}
+
+				ChangeColors(solution, water, changes, mark, modeB, true, true, true, 4, 0x1000, symmetric);
+			}
+
+			ChangeColors(solution, water, changes, mark, modeB, true, false, false, 4, 0x4000, 1);
+			ChangeColors(solution, water, changes, mark, modeB, false, true, false, 4, 0x10000, 1);
+			ChangeColors(solution, water, changes, mark, modeB, false, false, true, 4, 0x40000, 1);
 
 			if (!changes)
 				break;
@@ -3020,28 +3277,25 @@ struct Block
 
 		for (int i = 0; i < 16; i++)
 		{
-			__m128i mc = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(src[i]));
-			mc = _mm_shuffle_epi32(mc, _MM_SHUFFLE(0, 2, 1, 3));
+			__m128i mc = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(src[i]));
+			mc = _mm_shufflelo_epi16(mc, _MM_SHUFFLE(0, 2, 1, 3));
 
 			__m128i mA = _mm_load_si128(&((const __m128i*)&interpolation[0][0])[i]);
 			__m128i mB = _mm_unpackhi_epi64(mA, mA);
 
-			mA = _mm_cvtepi16_epi32(mA);
-			mB = _mm_cvtepi16_epi32(mB);
-
-			__m128i mmask = _mm_cvtepi8_epi32(_mm_cvtsi32_si128(msk[i]));
+			__m128i mmask = _mm_cvtepi8_epi16(_mm_cvtsi32_si128(msk[i]));
 
 			mc = _mm_and_si128(mc, mmask);
 			mA = _mm_and_si128(mA, mmask);
 			mB = _mm_and_si128(mB, mmask);
 
-			src[i] = _mm_cvtsi128_si32(_mm_packus_epi16(_mm_packus_epi16(mc, mc), mc));
+			src[i] = _mm_cvtsi128_si32(_mm_packus_epi16(mc, mc));
 
 			__m128i mAC, mBC;
 			if (transparent)
 			{
 				mAC = _mm_srai_epi16(_mm_add_epi16(mA, mB), 1);
-				mBC = _mm_insert_epi16(mAC, 0, 0);
+				mBC = _mm_and_si128(mAC, _mm_load_si128((const __m128i*)g_Transparent_I16));
 			}
 			else
 			{
@@ -3050,34 +3304,36 @@ struct Block
 				mBC = _mm_add_epi16(_mm_srai_epi16(_mm_add_epi16(_mm_slli_epi16(mBA, 2), mBA), 3), mA);
 			}
 
-			_mm_store_si128(&vals[i], _mm_packus_epi16(_mm_packus_epi16(mA, mAC), _mm_packus_epi16(mBC, mB)));
-
 			int good = 0xF;
-			if (_mm_movemask_epi8(_mm_cmpeq_epi32(mA, mAC)) == 0xFFFF) good &= ~2;
-			if (_mm_movemask_epi8(_mm_cmpeq_epi32(mAC, mBC)) == 0xFFFF) good &= ~4;
-			if (_mm_movemask_epi8(_mm_cmpeq_epi32(mBC, mB)) == 0xFFFF) good &= ~8;
-			if (_mm_movemask_epi8(_mm_cmpeq_epi32(mAC, mB)) == 0xFFFF) good &= ~8; // punch-through
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(mA, mAC)) == 0xFFFF) good &= ~2;
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(mAC, mBC)) == 0xFFFF) good &= ~4;
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(mBC, mB)) == 0xFFFF) good &= ~8;
+			if (_mm_movemask_epi8(_mm_cmpeq_epi16(mAC, mB)) == 0xFFFF) good &= ~8; // punch-through
 
-			mA = _mm_sub_epi16(mA, mc);
-			mB = _mm_sub_epi16(mB, mc);
-			mAC = _mm_sub_epi16(mAC, mc);
-			mBC = _mm_sub_epi16(mBC, mc);
+			mc = _mm_unpacklo_epi64(mc, mc);
 
-			__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB);
+			__m128i mL = _mm_unpacklo_epi64(mA, mAC);
+			__m128i mH = _mm_unpacklo_epi64(mBC, mB);
 
-			mA = _mm_mullo_epi16(mA, mA);
-			mB = _mm_mullo_epi16(mB, mB);
-			mAC = _mm_mullo_epi16(mAC, mAC);
-			mBC = _mm_mullo_epi16(mBC, mBC);
+			_mm_store_si128(&vals[i], _mm_packus_epi16(mL, mH));
 
-			mA = _mm_mullo_epi32(mA, magrb);
-			mB = _mm_mullo_epi32(mB, magrb);
-			mAC = _mm_mullo_epi32(mAC, magrb);
-			mBC = _mm_mullo_epi32(mBC, magrb);
+			mL = _mm_sub_epi16(mL, mc);
+			mH = _mm_sub_epi16(mH, mc);
 
-			__m128i m10 = _mm_hadd_epi32(mA, mAC);
-			__m128i m32 = _mm_hadd_epi32(mBC, mB);
-			__m128i me4 = _mm_hadd_epi32(m10, m32);
+			__m128i msign = _mm_shuffle_epi32(_mm_cvtsi64_si128(0x80008000LL), 0);
+
+			mL = _mm_mullo_epi16(mL, mL);
+			mH = _mm_mullo_epi16(mH, mH);
+
+			__m128i magrb = _mm_load_si128((const __m128i*)g_AGRB_I16);
+
+			mL = _mm_xor_si128(mL, msign);
+			mH = _mm_xor_si128(mH, msign);
+
+			mL = _mm_madd_epi16(mL, magrb);
+			mH = _mm_madd_epi16(mH, magrb);
+
+			__m128i me4 = _mm_hadd_epi32(mL, mH);
 			__m128i me1 = HorizontalMinimum4(me4);
 
 			int way = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(me4, me1)));
@@ -3332,13 +3588,7 @@ struct Window1
 
 	void Outer()
 	{
-		for (int y = 0 + 1; y < 3 - 1; y++)
-		{
-			for (int x = 0 + 1; x < 3 - 1; x++)
-			{
-				Matrix[y][x]->Colors = _mm_setzero_si128();
-			}
-		}
+		Matrix[1][1]->Colors = _mm_setzero_si128();
 
 		int stride = sizeof(Field[0]);
 
@@ -3889,6 +4139,8 @@ static void BlockKernel_Prepare(int y, int x)
 {
 	Block& block = Block::Buffer[y][x];
 
+	block.InitBias();
+
 	block.UnpackColors();
 
 	block.CheckEmpty();
@@ -4011,10 +4263,12 @@ static void BlockKernel_FinalPackModulation(int y, int x)
 	block.FinalPackModulation();
 }
 
-static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint8_t* src_bgra, int src_s, int passes, bool incremental)
+static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint8_t* src_bgra, uint8_t* bias_agrb, int src_s, int passes, bool incremental)
 {
 	_Image = (int*)src_bgra;
 	_ImageToMaskDelta = mask_agrb - src_bgra;
+	_ImageToBiasDelta = bias_agrb - src_bgra;
+
 	_Size = src_s;
 	_Mask = (src_s >> 2) - 1;
 
@@ -4067,8 +4321,8 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 	static const int CLIMBER = 8;
 	static const int WINDOW1 = 4;
 
-	int quota_climber = CLIMBER;
-	int quota_window1 = WINDOW1;
+	int quota_climber = (passes > 0) ? CLIMBER : 2;
+	int quota_window1 = (passes > 0) ? WINDOW1 : 0;
 	int quota_window4 = passes;
 
 	bool last_climber = false;
@@ -4094,15 +4348,13 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 		{
 			double psnr = 10.0 * log((255.0 * 255.0) * kColor * (_Size * _Size) / error) / log(10.0);
 
-			printf("Texture wPSNR = %f  \r", psnr);
-
-			// Специальный случай /draft /incremental когда первый Climber не дал заметных улучшений
-			if (incremental && (passes <= 0) && (quota_climber == CLIMBER - 1) && (quota_window1 == WINDOW1) && (psnr - water_psnr < 0.05))
+			// Специальный случай /draft когда нет заметных улучшений
+			if ((passes <= 0) && (psnr - water_psnr < 0.05))
 			{
-				printf("Already compressed\t\t\t");
 				break;
 			}
 
+			printf("Texture wPSNR = %f  \r", psnr);
 			water_psnr = psnr;
 		}
 		else
@@ -4143,15 +4395,6 @@ static int64_t Compress(uint8_t* dst_pvrtc, const uint8_t* mask_agrb, const uint
 			{
 				last_climber = true;
 				continue;
-			}
-
-			// Специальный случай /draft /incremental когда первый Climber не дал улучшений
-			if (incremental && (passes <= 0) && (quota_climber == CLIMBER - 1) && (quota_window1 == WINDOW1))
-			{
-				printf("\b\b\b\b\b\b\b\b");
-				printf("\b\b\b\b\b\b\b\b");
-				printf("Already\t\t");
-				break;
 			}
 		}
 
@@ -4260,7 +4503,7 @@ static void DecompressState(uint8_t* dst_bgra, int dst_s)
 	}
 }
 
-static void PackTexture(const char* name, int Size, uint8_t* dst_bgra, const char* psnr, uint8_t* mask_agrb, const uint8_t* src_bgra, int src_s, int passes, bool incremental)
+static void PackTexture(const char* name, int Size, uint8_t* dst_bgra, const char* psnr, uint8_t* mask_agrb, const uint8_t* src_bgra, uint8_t* bias_agrb, int src_s, int passes, bool incremental)
 {
 	uint8_t* dst_pvrtc = new uint8_t[Size];
 	memset(dst_pvrtc, 0, Size);
@@ -4272,7 +4515,7 @@ static void PackTexture(const char* name, int Size, uint8_t* dst_bgra, const cha
 
 	auto start = std::chrono::high_resolution_clock::now();
 
-	int64_t mse = Compress(dst_pvrtc, mask_agrb, src_bgra, src_s, passes, incremental);
+	int64_t mse = Compress(dst_pvrtc, mask_agrb, src_bgra, bias_agrb, src_s, passes, incremental);
 
 	auto finish = std::chrono::high_resolution_clock::now();
 
@@ -4303,12 +4546,13 @@ static void PackTexture(const char* name, int Size, uint8_t* dst_bgra, const cha
 int PvrtcMainWithArgs(const std::vector<std::string>& args)
 {
 	bool flip = true;
+	bool mask = true;
 	bool incremental = false;
 	int passes = 1;
 	int border = 1;
 
 	const char* src_name = nullptr;
-	const char* dst_rgba_name = nullptr;
+	const char* dst_name = nullptr;
 	const char* result_name = nullptr;
 
 	for (int i = 0, n = (int)args.size(); i < n; i++)
@@ -4317,7 +4561,12 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 
 		if (arg[0] == '/')
 		{
-			if (strcmp(arg, "/draft") == 0)
+			if (strcmp(arg, "/nomask") == 0)
+			{
+				mask = false;
+				continue;
+			}
+			else if (strcmp(arg, "/draft") == 0)
 			{
 				passes = 0;
 				continue;
@@ -4353,9 +4602,9 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 		{
 			src_name = arg;
 		}
-		else if (dst_rgba_name == nullptr)
+		else if (dst_name == nullptr)
 		{
-			dst_rgba_name = arg;
+			dst_name = arg;
 		}
 		else
 		{
@@ -4425,14 +4674,23 @@ int PvrtcMainWithArgs(const std::vector<std::string>& args)
 	InitWindow1Inner();
 	InitWindow4Inner();
 
-	if ((dst_rgba_name != nullptr) && dst_rgba_name[0])
+	if ((dst_name != nullptr) && dst_name[0])
 	{
 		uint8_t* mask_agrb = new uint8_t[src_texture_s * src_texture_stride];
+		uint8_t* bias_agrb = new uint8_t[src_texture_s * src_texture_stride];
 
-		ComputeAlphaMaskWithOutline(mask_agrb, src_texture_bgra, src_texture_s, border);
+		if (mask)
+		{
+			ComputeAlphaMaskWithOutline(mask_agrb, src_texture_bgra, src_texture_s, border);
+		}
+		else
+		{
+			FullMask(mask_agrb, src_texture_s);
+		}
 
-		PackTexture(dst_rgba_name, Size, dst_texture_bgra, "wPSNR", mask_agrb, src_texture_bgra, src_texture_s, passes, incremental);
+		PackTexture(dst_name, Size, dst_texture_bgra, "wPSNR", mask_agrb, src_texture_bgra, bias_agrb, src_texture_s, passes, incremental);
 
+		delete[] bias_agrb;
 		delete[] mask_agrb;
 	}
 
@@ -4452,7 +4710,7 @@ int __cdecl main(int argc, char* argv[])
 {
 	if (argc < 2)
 	{
-		printf("Usage: PvrtcCompress [/draft] [/incremental] [/retina] src [dst_rgba] [/debug result.png]\n");
+		printf("Usage: PvrtcCompress [/draft] [/incremental] [/retina] [/nomask] src [dst] [/debug result.png]\n");
 		return 1;
 	}
 
