@@ -2,7 +2,7 @@
 // PVS-Studio Static Code Analyzer for C, C++ and C#: http://www.viva64.com
 // --------------------------------------------------------------------------------
 //
-// Copyright(c) 2017 Playrix LLC
+// Copyright(c) 2017-present Playrix LLC
 //
 // LICENSE: https://mit-license.org
 
@@ -47,11 +47,9 @@
 
 #define INLINED __forceinline
 #define NOTINLINED __declspec(noinline)
-#define M128I_I32(mm, index) ((mm).m128i_i32[index])
 #else
 #define INLINED __attribute__((always_inline))
 #define NOTINLINED __attribute__((noinline))
-#define M128I_I32(mm, index) (reinterpret_cast<int32_t(&)[4]>(mm)[index])
 #endif
 
 typedef struct alignas(16) { int Data[8 * 4]; __m128i DataGRB[8], DataGR[8], DataGB[8]; int Count; uint8_t Color[4]; uint8_t Shift[8]; } Half;
@@ -1654,8 +1652,10 @@ static INLINED int AlphaLevels(const Area& area, const __m128i(*errors_U16)[32],
 #define SSIM_FINAL(dst, p1, p2) \
 	__m128d dst; \
 	{ \
-		__m128d mp1 = _mm_load1_pd(&p1); \
-		__m128d mp2 = _mm_load1_pd(&p2); \
+		__m128d mp1 = _mm_load_sd(&p1); \
+		__m128d mp2 = _mm_load_sd(&p2); \
+		mp1 = _mm_shuffle_pd(mp1, mp1, 0); \
+		mp2 = _mm_shuffle_pd(mp2, mp2, 0); \
 		dst = _mm_div_pd( \
 			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasb), mp1), _mm_add_pd(_mm_cvtepi32_pd(sab), mp2)), \
 			_mm_mul_pd(_mm_add_pd(_mm_cvtepi32_pd(sasa_sbsb), mp1), _mm_add_pd(_mm_cvtepi32_pd(saa_sbb), mp2))); \
@@ -3032,37 +3032,26 @@ static INLINED void SortNodes10(Node nodes[0x10 + 1], int water)
 
 	if (w <= 2)
 	{
-		for (int i = w; i < 2; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w + 0].Error = water;
+		nodes[w + 1].Error = water;
 
 		SortNodes2Shifted(&nodes[1]);
 	}
 	else if (w <= 4)
 	{
-		for (int i = w; i < 4; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w].Error = water;
 
 		SortNodes4Shifted(&nodes[2]);
 	}
 	else if (w <= 6)
 	{
-		for (int i = w; i < 6; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w].Error = water;
 
 		SortNodes6Shifted(&nodes[3]);
 	}
 	else if (w <= 8)
 	{
-		for (int i = w; i < 8; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w].Error = water;
 
 		SortNodes8Shifted(&nodes[4]);
 	}
@@ -3103,37 +3092,26 @@ static INLINED void SortNodes20(Node nodes[0x20 + 1], int water)
 
 	if (w <= 2)
 	{
-		for (int i = w; i < 2; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w + 0].Error = water;
+		nodes[w + 1].Error = water;
 
 		SortNodes2Shifted(&nodes[1]);
 	}
 	else if (w <= 4)
 	{
-		for (int i = w; i < 4; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w].Error = water;
 
 		SortNodes4Shifted(&nodes[2]);
 	}
 	else if (w <= 6)
 	{
-		for (int i = w; i < 6; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w].Error = water;
 
 		SortNodes6Shifted(&nodes[3]);
 	}
 	else if (w <= 8)
 	{
-		for (int i = w; i < 8; i++)
-		{
-			nodes[i].Error = water;
-		}
+		nodes[w].Error = water;
 
 		SortNodes8Shifted(&nodes[4]);
 	}
@@ -3423,7 +3401,7 @@ static INLINED int ComputeErrorColor4(__m128i mt10, __m128i mt32, __m128i mweigh
 			return water;
 	}
 
-	k = (k < 0) ? k + 3 : k;
+	k += 3;
 
 #ifndef OPTION_LINEAR
 	__m128i mbias = _mm_shuffle_epi32(_mm_cvtsi32_si128(bias), 0);
@@ -4238,40 +4216,23 @@ static INLINED int DifferentialColors3(int Id, uint32_t& flag, const Node node[0
 
 		diff[8].Color = w;
 
+		diff[w].Error = water;
 		if (w <= 2)
 		{
-			for (int i = w; i < 2; i++)
-			{
-				diff[i].Error = water;
-			}
+			diff[w + 1].Error = water;
 
 			SortNodes2Shifted(&diff[1]);
 		}
 		else if (w <= 4)
 		{
-			for (int i = w; i < 4; i++)
-			{
-				diff[i].Error = water;
-			}
-
 			SortNodes4Shifted(&diff[2]);
 		}
 		else if (w <= 6)
 		{
-			for (int i = w; i < 6; i++)
-			{
-				diff[i].Error = water;
-			}
-
 			SortNodes6Shifted(&diff[3]);
 		}
 		else
 		{
-			for (int i = w; i < 8; i++)
-			{
-				diff[i].Error = water;
-			}
-
 			SortNodes8Shifted(&diff[4]);
 		}
 	}
