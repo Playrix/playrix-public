@@ -6994,11 +6994,13 @@ static __m128i PackTexture(uint8_t* dst_etc1, uint8_t* src_bgra, int src_w, int 
 
 	if ((mode == PackMode::CompressAlphaEnhanced) || (mode == PackMode::CompressColorEnhanced))
 	{
-		int n = (src_h * src_w) >> 4;
+		int pixels = src_h * src_w;
 
 		int span = Max((int)std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count(), 1);
 
-		printf("    Compressed %d blocks, elapsed %i ms, %i bps\n", n, span, (int)(n * 1000LL / span));
+		int kpx_s = pixels / span;
+
+		printf("    Compressed %d blocks, elapsed %i ms, throughput %d.%03d Mpx/s\n", pixels >> 4, span, kpx_s / 1000, kpx_s % 1000);
 	}
 
 	return _mm_unpacklo_epi64(_mm_cvtsi64_si128(mse), _mm_castpd_si128(_mm_load_sd(&ssim)));

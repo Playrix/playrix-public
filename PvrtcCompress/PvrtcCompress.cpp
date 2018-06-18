@@ -4525,13 +4525,15 @@ static void PackTexture(const char* name, int Size, uint8_t* dst_bgra, const cha
 
 	if (mse > 0)
 	{
-		int n = (src_s * src_s) >> 4;
+		int pixels = src_s * src_s;
 
-		printf("    Texture %s = %f, elapsed %i ms, %i bps\n",
+		int kpx_s = pixels / span;
+
+		printf("    Texture %s = %f, elapsed %i ms, throughput %d.%03d Mpx/s\n",
 			psnr,
 			10.0 * log((255.0 * 255.0) * kColor * (src_s * src_s) / mse) / log(10.0),
 			span,
-			(int)(n * 1000LL / span));
+			kpx_s / 1000, kpx_s % 1000);
 	}
 	else
 	{
