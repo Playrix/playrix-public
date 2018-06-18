@@ -1,6 +1,10 @@
 
-// Warning: SSE4 and AVX2 produce different results
-#include "SVD" // Eigen 3.3.3 is required
+#ifdef __AVX__
+#error AVX produces other results
+#endif
+#define EIGEN_DONT_VECTORIZE
+#define EIGEN_FAST_MATH 0
+#include "SVD" // Eigen 3.3.4 is required
 
 template<int R, int C>
 static inline void pseudoInverse(float A[], float B[])
