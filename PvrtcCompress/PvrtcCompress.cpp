@@ -1900,19 +1900,18 @@ struct Block
 		__m128i m0 = _mm_shuffle_epi32(_mm_cvtsi32_si128(-1), 0);
 		__m128i m1 = _mm_setzero_si128();
 
-		if (IsEmpty)
+		int yL = (IsEmpty || (Y == 0)) ? 0 : 1;
+		int yH = (IsEmpty || (Y == _Mask)) ? 2 : 1;
+
+		int xL = (IsEmpty || (X == 0)) ? 0 : 1;
+		int xH = (IsEmpty || (X == _Mask)) ? 2 : 1;
+
+		for (int y = yL; y <= yH; y++)
 		{
-			for (int y = 0; y < 3; y++)
+			for (int x = xL; x <= xH; x++)
 			{
-				for (int x = 0; x < 3; x++)
-				{
-					Matrix[y][x]->Egoist4x4_Mask(m0, m1);
-				}
+				Matrix[y][x]->Egoist4x4_Mask(m0, m1);
 			}
-		}
-		else
-		{
-			Egoist4x4_Mask(m0, m1);
 		}
 
 		m0 = _mm_min_epu8(m0, _mm_shuffle_epi32(m0, _MM_SHUFFLE(2, 3, 0, 1)));
