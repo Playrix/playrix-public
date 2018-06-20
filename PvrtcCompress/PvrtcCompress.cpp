@@ -2907,164 +2907,189 @@ struct Block
 		}
 	}
 
-	INLINED void ChangeAlpha(__m128i& backup, int64_t& water, int& changes, int mark, int group, int mask)
+	INLINED void ChangeAlphaDown(__m128i& backup, int64_t& water, bool& changes, int group)
 	{
-		if ((changes != 0) || (mask < mark))
+		for (;; )
 		{
-			for (;; )
+			int a = M128I_I16(Colors, group);
+			if (a <= 0) break;
+			if (a >= 0xF)
 			{
-				int a = M128I_I16(Colors, group);
-				if (a <= 0) break;
-				if (a >= 0xF)
-				{
-					if (IsOpaque)
-						break;
+				if (IsOpaque)
+					break;
 
-					M128I_I16(Colors, group) = 0xE;
-					M128I_I16(Colors, group + 1) = (short)MakeColor4(M128I_I16(Colors, group + 1));
-					M128I_I16(Colors, group + 2) = (short)MakeColor4(M128I_I16(Colors, group + 2));
-					if (group == 0)
-						M128I_I16(Colors, group + 3) = (short)MakeColor3(M128I_I16(Colors, group + 3));
-					else
-						M128I_I16(Colors, group + 3) = (short)MakeColor4(M128I_I16(Colors, group + 3));
-				}
+				M128I_I16(Colors, group) = 0xE;
+				M128I_I16(Colors, group + 1) = (short)MakeColor4(M128I_I16(Colors, group + 1));
+				M128I_I16(Colors, group + 2) = (short)MakeColor4(M128I_I16(Colors, group + 2));
+				if (group == 0)
+					M128I_I16(Colors, group + 3) = (short)MakeColor3(M128I_I16(Colors, group + 3));
 				else
-				{
-					a = MakeAlpha3(a - 2);
-					M128I_I16(Colors, group) = (short)a;
-				}
-
-				if (ClimberTest(backup, water)) changes = mask; else break;
+					M128I_I16(Colors, group + 3) = (short)MakeColor4(M128I_I16(Colors, group + 3));
 			}
-		}
-
-		// because of alpha loop side effects
-		if (((changes != 0) || (mask <= mark)) && (changes != mask))
-		{
-			for (;; )
+			else
 			{
-				int a = M128I_I16(Colors, group);
-				if (a >= 0xF) break;
-				if (a == 0xE)
-				{
-					M128I_I16(Colors, group) = 0xF;
-					//M128I_I16(Colors, group + 1) = (short)MakeColor5(M128I_I16(Colors, group + 1));
-					//M128I_I16(Colors, group + 2) = (short)MakeColor5(M128I_I16(Colors, group + 2));
-					if (group == 0)
-						M128I_I16(Colors, group + 3) = (short)MakeColor4(M128I_I16(Colors, group + 3));
-					//else
-					//	M128I_I16(Colors, group + 3) = (short)MakeColor5(M128I_I16(Colors, group + 3));
-				}
-				else
-				{
-					a = MakeAlpha3(a + 2);
-					M128I_I16(Colors, group) = (short)a;
-				}
-
-				if (ClimberTest(backup, water)) changes = mask + mask; else break;
+				a = MakeAlpha3(a - 2);
+				M128I_I16(Colors, group) = (short)a;
 			}
+
+			if (ClimberTest(backup, water)) changes = true; else break;
 		}
 	}
 
-	INLINED void ChangeColors(__m128i& backup, int64_t& water, int& changes, int mark, int mode, bool hasG, bool hasR, bool hasB, int group, int mask, int symmetric)
+	INLINED void ChangeAlphaUp(__m128i& backup, int64_t& water, bool& changes, int group)
 	{
-		if ((changes != 0) || ((mask << symmetric) < mark))
+		for (;; )
 		{
-			for (;; )
+			int a = M128I_I16(Colors, group);
+			if (a >= 0xF) break;
+			if (a == 0xE)
 			{
-				bool other = false;
-
-				if (hasG)
-				{
-					int c = M128I_I16(Colors, group + 1);
-					if (c > 0)
-					{
-						c = mode ? c - 1 : MakeColor4(c - 2);
-						M128I_I16(Colors, group + 1) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasR)
-				{
-					int c = M128I_I16(Colors, group + 2);
-					if (c > 0)
-					{
-						c = mode ? c - 1 : MakeColor4(c - 2);
-						M128I_I16(Colors, group + 2) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasB)
-				{
-					int c = M128I_I16(Colors, group + 3);
-					if (c > 0)
-					{
-						if (group == 0)
-							c = mode ? MakeColor4(c - 2) : MakeColor3(c - 4);
-						else
-							c = mode ? c - 1 : MakeColor4(c - 2);
-						M128I_I16(Colors, group + 3) = (short)c;
-						other = true;
-					}
-				}
-
-				if (!other)
-					break;
-
-				if (ClimberTest(backup, water)) changes = mask; else break;
+				M128I_I16(Colors, group) = 0xF;
+				//M128I_I16(Colors, group + 1) = (short)MakeColor5(M128I_I16(Colors, group + 1));
+				//M128I_I16(Colors, group + 2) = (short)MakeColor5(M128I_I16(Colors, group + 2));
+				if (group == 0)
+					M128I_I16(Colors, group + 3) = (short)MakeColor4(M128I_I16(Colors, group + 3));
+				//else
+				//	M128I_I16(Colors, group + 3) = (short)MakeColor5(M128I_I16(Colors, group + 3));
 			}
+			else
+			{
+				a = MakeAlpha3(a + 2);
+				M128I_I16(Colors, group) = (short)a;
+			}
+
+			if (ClimberTest(backup, water)) changes = true; else break;
+		}
+	}
+
+	INLINED void ChangeColorsDown(__m128i& backup, int64_t& water, bool& changes, int mode, bool hasG, bool hasR, bool hasB, int group)
+	{
+		for (;; )
+		{
+			bool other = false;
+
+			if (hasG)
+			{
+				int c = M128I_I16(Colors, group + 1);
+				if (c > 0)
+				{
+					c = mode ? c - 1 : MakeColor4(c - 2);
+					M128I_I16(Colors, group + 1) = (short)c;
+					other = true;
+				}
+			}
+
+			if (hasR)
+			{
+				int c = M128I_I16(Colors, group + 2);
+				if (c > 0)
+				{
+					c = mode ? c - 1 : MakeColor4(c - 2);
+					M128I_I16(Colors, group + 2) = (short)c;
+					other = true;
+				}
+			}
+
+			if (hasB)
+			{
+				int c = M128I_I16(Colors, group + 3);
+				if (c > 0)
+				{
+					if (group == 0)
+						c = mode ? MakeColor4(c - 2) : MakeColor3(c - 4);
+					else
+						c = mode ? c - 1 : MakeColor4(c - 2);
+					M128I_I16(Colors, group + 3) = (short)c;
+					other = true;
+				}
+			}
+
+			if (!other)
+				break;
+
+			if (ClimberTest(backup, water)) changes = true; else break;
+		}
+	}
+
+	INLINED void ChangeColorsUp(__m128i& backup, int64_t& water, bool& changes, int mode, bool hasG, bool hasR, bool hasB, int group)
+	{
+		for (;; )
+		{
+			bool other = false;
+
+			if (hasG)
+			{
+				int c = M128I_I16(Colors, group + 1);
+				if (c < 0x1F)
+				{
+					c = mode ? c + 1 : MakeColor4(c + 2);
+					M128I_I16(Colors, group + 1) = (short)c;
+					other = true;
+				}
+			}
+
+			if (hasR)
+			{
+				int c = M128I_I16(Colors, group + 2);
+				if (c < 0x1F)
+				{
+					c = mode ? c + 1 : MakeColor4(c + 2);
+					M128I_I16(Colors, group + 2) = (short)c;
+					other = true;
+				}
+			}
+
+			if (hasB)
+			{
+				int c = M128I_I16(Colors, group + 3);
+				if (c < 0x1F)
+				{
+					if (group == 0)
+						c = mode ? MakeColor4(c + 2) : MakeColor3(c + 4);
+					else
+						c = mode ? c + 1 : MakeColor4(c + 2);
+					M128I_I16(Colors, group + 3) = (short)c;
+					other = true;
+				}
+			}
+
+			if (!other)
+				break;
+
+			if (ClimberTest(backup, water)) changes = true; else break;
+		}
+	}
+
+	INLINED void ChangeDown(__m128i& solution, int64_t& water, bool& changes, int group, bool solveA)
+	{
+		if (solveA)
+		{
+			ChangeAlphaDown(solution, water, changes, group);
 		}
 
-		if (((changes != 0) || (mask + mask < mark)) && (changes != mask))
+		int mode = (M128I_I16(Colors, group) == 0xF);
+
+		ChangeColorsDown(solution, water, changes, mode, true, true, true, group);
+
+		ChangeColorsDown(solution, water, changes, mode, true, false, false, group);
+		ChangeColorsDown(solution, water, changes, mode, false, true, false, group);
+		ChangeColorsDown(solution, water, changes, mode, false, false, true, group);
+	}
+
+	INLINED void ChangeUp(__m128i& solution, int64_t& water, bool& changes, int group, bool solveA)
+	{
+		if (solveA)
 		{
-			for (;; )
-			{
-				bool other = false;
-
-				if (hasG)
-				{
-					int c = M128I_I16(Colors, group + 1);
-					if (c < 0x1F)
-					{
-						c = mode ? c + 1 : MakeColor4(c + 2);
-						M128I_I16(Colors, group + 1) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasR)
-				{
-					int c = M128I_I16(Colors, group + 2);
-					if (c < 0x1F)
-					{
-						c = mode ? c + 1 : MakeColor4(c + 2);
-						M128I_I16(Colors, group + 2) = (short)c;
-						other = true;
-					}
-				}
-
-				if (hasB)
-				{
-					int c = M128I_I16(Colors, group + 3);
-					if (c < 0x1F)
-					{
-						if (group == 0)
-							c = mode ? MakeColor4(c + 2) : MakeColor3(c + 4);
-						else
-							c = mode ? c + 1 : MakeColor4(c + 2);
-						M128I_I16(Colors, group + 3) = (short)c;
-						other = true;
-					}
-				}
-
-				if (!other)
-					break;
-
-				if (ClimberTest(backup, water)) changes = mask + mask; else break;
-			}
+			ChangeAlphaUp(solution, water, changes, group);
 		}
+
+		int mode = (M128I_I16(Colors, group) == 0xF);
+
+		ChangeColorsUp(solution, water, changes, mode, true, true, true, group);
+
+		ChangeColorsUp(solution, water, changes, mode, true, false, false, group);
+		ChangeColorsUp(solution, water, changes, mode, false, true, false, group);
+		ChangeColorsUp(solution, water, changes, mode, false, false, true, group);
 	}
 
 	/////////////
@@ -3097,95 +3122,23 @@ struct Block
 
 		__m128i solution = backup;
 
-		int mark = 0x100000;
-
 		bool solveA = true;
 		if (IsDense && ((M128I_I16(Colors, 0) & M128I_I16(Colors, 4)) == 0xF))
 		{
 			solveA = false;
 		}
 
+		bool mark = false;
+
 		for (;; )
 		{
-			int changes = 0;
+			bool changes = false;
 
-			if (solveA)
-			{
-				ChangeAlpha(solution, water, changes, mark, 0, 1);
-			}
+			ChangeDown(solution, water, changes, 0, solveA);
+			ChangeUp(solution, water, changes, 4, solveA);
 
-			int modeA = (M128I_I16(Colors, 0) == 0xF);
-
-			{
-				bool symmetric = true;
-
-				{
-					int c = M128I_I16(Colors, 0 + 1);
-
-					symmetric &= (c > 0);
-					symmetric &= (c < 0x1F);
-				}
-
-				{
-					int c = M128I_I16(Colors, 0 + 2);
-
-					symmetric &= (c > 0);
-					symmetric &= (c < 0x1F);
-				}
-
-				{
-					int c = M128I_I16(Colors, 0 + 3);
-
-					symmetric &= (c > 0);
-					symmetric &= (c < 0x1F);
-				}
-
-				ChangeColors(solution, water, changes, mark, modeA, true, true, true, 0, 4, symmetric);
-			}
-
-			ChangeColors(solution, water, changes, mark, modeA, true, false, false, 0, 0x10, 1);
-			ChangeColors(solution, water, changes, mark, modeA, false, true, false, 0, 0x40, 1);
-			ChangeColors(solution, water, changes, mark, modeA, false, false, true, 0, 0x100, 1);
-
-			//
-
-			if (solveA)
-			{
-				ChangeAlpha(solution, water, changes, mark, 4, 0x400);
-			}
-
-			int modeB = (M128I_I16(Colors, 4) == 0xF);
-
-			{
-				bool symmetric = true;
-
-				{
-					int c = M128I_I16(Colors, 4 + 1);
-
-					symmetric &= (c > 0);
-					symmetric &= (c < 0x1F);
-				}
-
-				{
-					int c = M128I_I16(Colors, 4 + 2);
-
-					symmetric &= (c > 0);
-					symmetric &= (c < 0x1F);
-				}
-
-				{
-					int c = M128I_I16(Colors, 4 + 3);
-
-					symmetric &= (c > 0);
-					symmetric &= (c < 0x1F);
-				}
-
-				ChangeColors(solution, water, changes, mark, modeB, true, true, true, 4, 0x1000, symmetric);
-			}
-
-			ChangeColors(solution, water, changes, mark, modeB, true, false, false, 4, 0x4000, 1);
-			ChangeColors(solution, water, changes, mark, modeB, false, true, false, 4, 0x10000, 1);
-			ChangeColors(solution, water, changes, mark, modeB, false, false, true, 4, 0x40000, 1);
+			ChangeUp(solution, water, changes, 0, solveA);
+			ChangeDown(solution, water, changes, 4, solveA);
 
 			if (!changes)
 				break;
@@ -3193,7 +3146,7 @@ struct Block
 			mark = changes;
 		}
 
-		if (mark == 0x100000)
+		if (!mark)
 		{
 			Colors = backup; Data[1] = backup1;
 			return;
