@@ -293,10 +293,6 @@ static INLINED uint32_t BROR(uint32_t x)
 	return (x >> 8) | (x << (32 - 8));
 }
 
-static INLINED void __debugbreak()
-{
-}
-
 #endif
 
 static INLINED constexpr int Min(int x, int y)
