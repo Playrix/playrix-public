@@ -6,3 +6,4 @@
 * [PvrtcCompress](https://github.com/Playrix/playrix-public/tree/master/PvrtcCompress) is a fast PVRTC 4bpp encoder with perceptual error metric.
 * [StaticTests](https://github.com/Playrix/playrix-public/tree/master/StaticTests) sample code for static tests`s system. 
 [Habr article.](https://habr.com/ru/company/playrix/blog/452926/)
+* [FontAssembler](https://github.com/Playrix/playrix-public/tree/master/font_assembler) is a tool for making font files (ttf) that contain only used symbols. [Habr article.](https://habr.com/ru/company/playrix/blog/648359/)
